@@ -1,0 +1,17 @@
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: SAMEORIGIN
+  Permissions-Policy: microphone=(), geolocation=()
+
+/index.html
+  Cache-Control: no-cache
+
+/app.js
+  Cache-Control: no-cache
+
+/core.js
+  Cache-Control: no-cache
+
+/style.css
+  Cache-Control: no-cache
