@@ -10,6 +10,7 @@
   let showFurigana = false, furiganaTokens = null, readingOverrides = [], readingTarget = null;
   let furiganaWorker = null, furiganaRequest = 0, furiganaPending = new Map();
   let cropState = null, cropDrag = null, cropResume = false;
+  let workspace = null;
   const language = () => document.querySelector('input[name="language"]:checked').value;
   const layout = () => language() === 'ja' ? $('layout').value : 'horizontal';
   const scrollTo = element => element.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' });
@@ -35,6 +36,7 @@
     document.querySelectorAll('.paragraph-play,.paragraph-repeat').forEach(button => { button.disabled = !synth; });
   }
   function renderPlayback(state) {
+    if (workspace?.view() === 'practice') return;
     const active = state.status === 'playing' || state.status === 'paused';
     const allActive = active && state.scope === 'all';
     $('all-label').textContent = allActive ? (state.status === 'paused' ? '이어서 듣기' : '잠깐 멈춤') : '전체 듣기';
@@ -103,6 +105,7 @@
       }
       body.append(span);
     }
+    workspace?.highlight(index,body);
   }
   function paintReadings() {
     // Apply ruby line spacing before inserting annotations so the first render
@@ -115,6 +118,7 @@
     $('furigana-toggle').setAttribute('aria-pressed',String(showFurigana && Boolean(furiganaTokens)));
     $('furigana-toggle').textContent = loading ? '후리가나 준비 중…' : showFurigana ? '후리가나 끄기' : state.status==='error' ? '후리가나 다시 시도' : '후리가나 켜기';
     renderPlayback(player.getState());
+    workspace?.renderPractice();
   }
   const furigana=createFuriganaController({load:requestFurigana,onChange:state=>{
     showFurigana=state.visible;furiganaTokens=state.tokens;
@@ -169,6 +173,7 @@
     $('ocr-progress').hidden = true; $('rotate').disabled = false;
   }
   function clearResult() {
+    workspace?.reset();
     player.stop(); paragraphs = []; annotations = []; lastActiveParagraph = -1;
     furigana.reset();readingOverrides=[];
     readingTarget = null; $('reading-word').textContent = ''; $('reading-value').value = ''; $('copy-text').value = '';
@@ -181,6 +186,7 @@
     document.body.classList.remove('has-results');
   }
   function reset({ scroll = true } = {}) {
+    workspace?.navigate('read');
     revision++; cancelOCR(); clearResult();
     if ($('crop-dialog').open) $('crop-dialog').close(); cropState = null; cropDrag = null; cropResume = false;
     if ($('reading-dialog').open) $('reading-dialog').close();
@@ -193,7 +199,7 @@
     document.body.classList.remove('has-content');
     if (scroll) window.scrollTo({ top: 0, behavior: 'instant' });
   }
-  function showParagraphs(items, notes = []) {
+  function showParagraphs(items, notes = [], records = null, keepUndo = false) {
     player.stop(); paragraphs = items; annotations = notes; lastActiveParagraph = -1;
     furigana.reset();readingOverrides=[];
     $('paragraph-count').textContent = items.length+'개'; $('paragraphs').replaceChildren();
@@ -225,11 +231,13 @@
     $('source-text').value = items.join('\n\n'); updateTextCount();
     $('results').hidden = false; $('player-bar').hidden = false; $('text-editor').hidden = true;
     document.body.classList.add('has-content', 'has-results');
+    workspace?.setDocument(items,records,keepUndo);
     $('furigana-toggle').hidden = language() !== 'ja'; paintReadings();
     updateVoiceWarning(); renderPlayback(player.getState());
   }
   function updateTextCount() { $('text-count').textContent = $('source-text').value.length.toLocaleString()+'자'; }
   function openEditor() {
+    workspace?.stopPractice();
     if (ocrTask) { cancelOCR(); $('photo-caption').textContent = '사진 인식을 멈췄어요. 다시 읽거나 직접 입력할 수 있어요.'; error('직접 입력으로 전환했어요. 사진을 다시 읽으려면 아래 버튼을 눌러주세요.'); }
     player.stop(); $('text-editor').hidden = false; $('results').hidden = true; $('player-bar').hidden = true;
     document.body.classList.remove('has-results'); document.body.classList.add('has-content');
@@ -247,6 +255,7 @@
     if (text.length > 30000) { toast('한 번에 30,000자까지 읽을 수 있어요.'); return; }
     $('error-panel').hidden = true;
     const edited = splitParagraphs(text, language());
+    revision++; cancelOCR();
     showParagraphs(edited, annotations.map(note => ({ ...note, before: note.kind === 'source' ? edited.length : Math.min(note.before, edited.length) })));
     $('source-text').blur();
     scrollTo($('results'));
@@ -408,6 +417,7 @@
     const size = rasterSize(original.source.width,original.source.height);
     input.width=size.width; input.height=size.height; original.padding=size.padding; original.scale=size.contentWidth/original.source.width;
     const context=input.getContext('2d'); context.fillStyle='#fff'; context.fillRect(0,0,input.width,input.height); context.imageSmoothingQuality='high'; context.drawImage(original.source,size.padding,size.padding,size.contentWidth,size.contentHeight);
+    const reference=document.createElement('canvas');reference.width=input.width;reference.height=input.height;reference.getContext('2d').drawImage(input,0,0);photo.reference=reference;
     const task = { worker: null, pageWorker: null, cancelled: false, terminated: false, abort: null, refining: false };
     const abort = new Promise((_, reject) => { task.abort = () => reject(new Error('cancelled')); });
     ocrTask = task; $('ocr-progress').hidden = false; $('rotate').disabled = true;
@@ -465,11 +475,12 @@
         if (lang === 'ja' && Math.abs(angle) >= .005 && Math.abs(angle) <= Math.PI/18) {
           task.refining = true; $('ocr-status').textContent = '사진 기울기를 맞추고 작은 읽는 법을 확인해요…';
           // Get Tesseract's exact rotated raster so all later geometry uses its coordinates.
-          const raster = await worker.recognize(input,{rotateRadians:angle},{text:false,imageColor:true});
+          const raster = await worker.recognize(reference,{rotateRadians:angle},{text:false,imageColor:true});
           if (!current()) return null;
           const image = new Image(); image.src = raster.data.imageColor; await image.decode();
           if (!current()) return null;
-          input.width = image.width; input.height = image.height; input.getContext('2d').drawImage(image,0,0); image.src = ''; raster.data.imageColor = null;
+          input.width = image.width; input.height = image.height; input.getContext('2d').drawImage(image,0,0);
+          reference.width=image.width;reference.height=image.height;reference.getContext('2d').drawImage(image,0,0);image.src = ''; raster.data.imageColor = null;
           const correctedRules = await cleanPage(task,input,'rules',null,direction); ruleRegions=correctedRules.regions;
           if (!current()) return null;
           result.data.rotateRadians = 0; rescanSource = {source:input,padding:0,scale:1,cap:.75};
@@ -535,7 +546,8 @@
       const extracted = extractedDocument.paragraphs;
       if (!extracted.length) throw new Error('글자를 찾지 못했어요. 밝고 선명한 사진을 선택해주세요.');
       if (extracted.join('\n\n').length > 30000) throw new Error('글이 너무 많아요. 사진을 한 페이지씩 나누어주세요.');
-      showParagraphs(extracted, extractedDocument.annotations);
+      const records=Math.abs(result.data.rotateRadians||0)<.001 ? StudyDocument.fromOCR(extracted,result.data,StudyCore,lang) : extracted.map(StudyDocument.fresh);
+      showParagraphs(extracted, extractedDocument.annotations,records);
       $('photo-title').textContent = extracted.length+'개 단락을 찾았어요';
       $('photo-caption').textContent = extractedDocument.annotations.length ? '본문만 읽어요. 생략 표시와 출처는 따로 표시했어요.' : '틀린 글자나 단락은 ‘글 수정’에서 고칠 수 있어요.';
       scrollTo($('results'));
@@ -563,6 +575,39 @@
       if (!await setPhoto(rotate(original.canvas), token, source)) return;
       await recognize(token);
     } catch { if (token === revision) error('사진을 회전하지 못했어요. 다시 선택해주세요.'); }
+  }
+
+  async function rescanRegion(source,box,signal) {
+    const lang=language(),direction=layout(),plan=ocrPlan(lang,direction);
+    const task={worker:null,pageWorker:null,cancelled:false,terminated:false};
+    let rejectAbort,deadline;
+    const cancelled=new Promise((_,reject)=>{rejectAbort=reject;});
+    const abort=()=>{task.cancelled=true;terminateWorker(task);rejectAbort(new DOMException('취소됨','AbortError'));};
+    signal.addEventListener('abort',abort,{once:true});
+    const check=()=>{if(signal.aborted||task.cancelled)throw new DOMException('취소됨','AbortError');};
+    const run=async()=>{
+      check();const canvas=document.createElement('canvas'),scale=Math.min(2,Math.sqrt(1500000/(box.w*box.h)));
+      canvas.width=Math.round(box.w*scale)+32;canvas.height=Math.round(box.h*scale)+32;
+      const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(source,box.x,box.y,box.w,box.h,16,16,canvas.width-32,canvas.height-32);
+      const rules=await cleanPage(task,canvas,'rules',null,direction);check();await loadOCR();check();
+      const creation=initializationGate.catch(()=>{}).then(async()=>{check();const worker=await Tesseract.createWorker(plan.langs,1,{...plan.options,workerPath:'https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/worker.min.js'});task.worker=worker;if(task.cancelled){await terminateWorker(task);check();}return worker;});
+      initializationGate=creation.then(()=>{},()=>{});const worker=await creation;check();
+      const vertical=direction==='vertical'||(lang==='ja'&&box.h>box.w*2);
+      await worker.setParameters({tessedit_pageseg_mode:vertical?Tesseract.PSM.SINGLE_BLOCK_VERT_TEXT:Tesseract.PSM.SINGLE_BLOCK,textord_tabfind_vertical_text:vertical?'1':'0',user_defined_dpi:'300'});check();
+      let result=await worker.recognize(canvas,{}, {text:true,blocks:true});check();
+      result.data=OCRClean.suppressRegions(result.data,rules.regions);
+      if(lang==='ja'){
+        const print=await cleanPage(task,canvas,'layout',result.data,vertical?'vertical':'horizontal');check();
+        if(print.regions.length){result=await worker.recognize(canvas,{}, {text:true,blocks:true});check();result.data=OCRClean.suppressRegions(result.data,rules.regions);}
+        result.data=OCRClean.restoreVerticalPunctuation(result.data,print.punctuation);
+      }
+      const extracted=documentFromOCR(result.data,lang,vertical?'vertical':'horizontal').paragraphs.join(lang==='ja'?'':' ').trim();
+      if(!extracted)throw new Error('選択した範囲に文字が見つかりません。');
+      return extracted;
+    };
+    try{return await Promise.race([run(),cancelled,new Promise((_,reject)=>{deadline=setTimeout(()=>reject(new Error('부분 인식 시간이 초과됐어요. 영역을 줄여 다시 시도해주세요.')),120000);})]);}
+    catch(error){if(signal.aborted)throw error;throw new Error(/^[가-힣]/.test(error.message)?error.message:'선택 영역을 읽지 못했어요. 조금 넓게 선택해주세요. 기존 글은 그대로예요.');}
+    finally{clearTimeout(deadline);task.cancelled=true;signal.removeEventListener('abort',abort);terminateWorker(task);}
   }
 
   $('reset').addEventListener('click', () => { reset(); toast('깨끗하게 비웠어요. 새 사진을 골라주세요.'); });
@@ -601,18 +646,23 @@
   }));
   $('layout').addEventListener('change', () => { revision++; cancelOCR(); player.stop(); if (photo?.canvas) recognize(revision); });
   $('play-all').addEventListener('click', () => {
+    if (workspace?.playControl()) return;
     const state = player.getState();
     if (state.scope === 'all' && state.status === 'playing') player.pause();
     else if (state.scope === 'all' && state.status === 'paused') player.resume();
     else player.play(paragraphs, 0, 'all', language());
   });
-  $('stop').addEventListener('click', () => player.stop());
-  $('rate').addEventListener('input', () => { updateRateDisplay(); player.updateRate(); });
+  $('stop').addEventListener('click', () => workspace.stop());
+  $('rate').addEventListener('input', () => { updateRateDisplay(); player.updateRate(); workspace.updateRate(); });
   $('dropzone').addEventListener('dragover', event => { event.preventDefault(); $('dropzone').classList.add('dragover'); });
   $('dropzone').addEventListener('dragleave', () => $('dropzone').classList.remove('dragover'));
   $('dropzone').addEventListener('drop', event => { event.preventDefault(); $('dropzone').classList.remove('dragover'); acceptPhoto(event.dataTransfer.files[0]); });
   document.addEventListener('dragover', event => event.preventDefault()); document.addEventListener('drop', event => event.preventDefault());
-  window.addEventListener('pagehide', () => { revision++; cancelOCR(); player.stop(); });
+  window.addEventListener('pagehide', () => reset({scroll:false}));
   if (synth) synth.addEventListener('voiceschanged', updateVoiceWarning);
+  workspace=StudyWorkspace.create({
+    get:()=>({paragraphs,annotations,photo,language:language()}),voiceFor,stop:()=>player.stop(),toast,rescan:rescanRegion,
+    commit:(records,notes,keepUndo)=>{const restore=showFurigana;revision++;cancelOCR();showParagraphs(records.map(r=>r.text),notes,records,keepUndo);if(restore&&language()==='ja')toggleFurigana();}
+  });
   updateRateDisplay(); updateVoiceWarning(); renderPlayback(player.getState());
 })();

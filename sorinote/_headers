@@ -39,3 +39,12 @@
 
 /style.css
   Cache-Control: no-cache
+
+/study.js
+  Cache-Control: no-cache
+
+/translation.js
+  Cache-Control: no-cache
+
+/workspace.js
+  Cache-Control: no-cache
