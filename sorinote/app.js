@@ -1,11 +1,13 @@
 'use strict';
 (() => {
-  const { LANGUAGES, splitParagraphs, paragraphsFromOCR, createPlayback } = StudyCore;
+  const { LANGUAGES, ocrPlan, rasterSize, splitParagraphs, paragraphsFromOCR, createPlayback } = StudyCore;
   const $ = id => document.getElementById(id);
   const synth = window.speechSynthesis;
   let paragraphs = [], photo = null, revision = 0, ocrTask = null, scriptPromise = null;
   let toastTimer = null, lastActiveParagraph = -1;
+  let initializationGate = Promise.resolve();
   const language = () => document.querySelector('input[name="language"]:checked').value;
+  const layout = () => language() === 'ja' ? $('layout').value : 'horizontal';
   const scrollTo = element => element.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' });
 
   function toast(message) {
@@ -64,9 +66,11 @@
   });
 
   function terminateWorker(task) {
-    if (!task.worker || task.terminated) return;
+    if (!task.worker) return Promise.resolve();
+    if (task.terminated) return task.termination || Promise.resolve();
     task.terminated = true;
-    Promise.resolve(task.worker.terminate()).catch(() => {});
+    task.termination = Promise.resolve(task.worker.terminate()).catch(() => {});
+    return task.termination;
   }
   function cancelOCR() {
     const task = ocrTask;
@@ -82,7 +86,9 @@
     document.body.classList.remove('has-results');
   }
   function reset({ scroll = true } = {}) {
-    revision++; cancelOCR(); clearResult(); photo = null;
+    revision++; cancelOCR(); clearResult();
+    if (photo) URL.revokeObjectURL(photo.previewURL);
+    photo = null;
     $('image-preview').removeAttribute('src'); $('photo-preview').hidden = true;
     $('image-input').value = ''; $('camera-input').value = '';
     $('rate').value = '1'; $('toast').hidden = true; clearTimeout(toastTimer);
@@ -144,16 +150,32 @@
     try {
       const img = new Image(); img.src = url; await img.decode();
       if (token !== revision) return;
-      const scale = Math.min(1, 2400/Math.max(img.width, img.height));
-      const canvas = document.createElement('canvas'); canvas.width = Math.max(1, Math.round(img.width*scale)); canvas.height = Math.max(1, Math.round(img.height*scale));
-      const context = canvas.getContext('2d'); context.fillStyle = '#fff'; context.fillRect(0, 0, canvas.width, canvas.height); context.drawImage(img, 0, 0, canvas.width, canvas.height);
-      photo = canvas.toDataURL('image/jpeg', .94); $('image-preview').src = photo; $('photo-preview').hidden = false;
+      const size = rasterSize(img.width, img.height);
+      const canvas = document.createElement('canvas'); canvas.width = size.width; canvas.height = size.height;
+      const context = canvas.getContext('2d'); context.fillStyle = '#fff'; context.fillRect(0, 0, canvas.width, canvas.height);
+      context.imageSmoothingEnabled = true; context.imageSmoothingQuality = 'high';
+      context.drawImage(img, size.padding, size.padding, size.contentWidth, size.contentHeight);
+      if (!await setPhoto(canvas, token)) return;
       $('photo-title').textContent = '사진에서 글자를 읽고 있어요'; $('photo-caption').textContent = '준비가 끝나면 단락별로 나누어드릴게요.';
       await recognize(token);
     } catch {
       if (token !== revision) return;
       $('ocr-progress').hidden = true; error('사진을 열지 못했어요. 다른 JPG·PNG 사진을 선택해주세요.');
     } finally { URL.revokeObjectURL(url); }
+  }
+  async function setPhoto(canvas, token) {
+    // OCR receives the lossless full canvas. Only the small preview is resized.
+    const preview = document.createElement('canvas');
+    const scale = Math.min(1, 480/Math.max(canvas.width, canvas.height));
+    preview.width = Math.max(1, Math.round(canvas.width*scale)); preview.height = Math.max(1, Math.round(canvas.height*scale));
+    preview.getContext('2d').drawImage(canvas, 0, 0, preview.width, preview.height);
+    const blob = await new Promise(resolve => preview.toBlob(resolve, 'image/png'));
+    if (token !== revision) return false;
+    if (!blob) throw new Error('사진을 준비하지 못했어요.');
+    if (photo) URL.revokeObjectURL(photo.previewURL);
+    photo = { canvas, previewURL: URL.createObjectURL(blob) };
+    $('image-preview').src = photo.previewURL; $('photo-preview').hidden = false;
+    return true;
   }
   function loadOCR() {
     if (window.Tesseract) return Promise.resolve();
@@ -170,7 +192,7 @@
   async function recognize(token = revision) {
     if (!photo) return;
     cancelOCR(); clearResult();
-    const input = photo, lang = language();
+    const input = photo.canvas, lang = language(), direction = layout(), plan = ocrPlan(lang, direction);
     const task = { worker: null, cancelled: false, terminated: false, abort: null };
     const abort = new Promise((_, reject) => { task.abort = () => reject(new Error('cancelled')); });
     ocrTask = task; $('ocr-progress').hidden = false; $('rotate').disabled = true;
@@ -181,26 +203,48 @@
     try {
       await Promise.race([loadOCR(), abort]);
       if (!current()) return;
-      const run = async () => {
-        const worker = await Tesseract.createWorker(LANGUAGES[lang].ocr, 1, {
+      const initialize = async () => {
+        if (!current()) return null;
+        const worker = await Tesseract.createWorker(plan.langs, 1, {
+          ...plan.options,
           workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/worker.min.js',
           logger: event => {
             if (!current()) return;
             const reading = event.status === 'recognizing text';
-            $('progress').value = reading ? .2 + .8*(event.progress || 0) : .1;
-            $('ocr-status').textContent = reading ? '글자를 읽고 있어요 · '+Math.round((event.progress || 0)*100)+'%' : event.status === 'loading language traineddata' ? LANGUAGES[lang].name+' 인식을 준비하고 있어요…' : '사진을 읽을 준비를 하고 있어요…';
+            const downloading = event.status === 'loading language traineddata';
+            $('progress').value = reading ? .3 + .7*(event.progress || 0) : downloading ? .05 + .25*(event.progress || 0) : .03;
+            $('ocr-status').textContent = reading ? '글자를 읽고 있어요 · '+Math.round((event.progress || 0)*100)+'%' : downloading ? LANGUAGES[lang].name+(lang === 'ja' ? ' 정밀 모델 준비 · ' : ' 인식 준비 · ')+Math.round((event.progress || 0)*100)+'%' : '사진을 읽을 준비를 하고 있어요…';
           }
         });
         task.worker = worker;
-        if (!current()) { terminateWorker(task); return null; }
-        await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK });
+        if (!current()) { await terminateWorker(task); return null; }
+        return worker;
+      };
+      const run = async () => {
+        // An unfinished model download cannot be cancelled by Tesseract's public API.
+        // Serialize initialization so rapidly changing photos does not start several large engines.
+        const creation = initializationGate.catch(() => {}).then(initialize);
+        initializationGate = creation.then(() => {}, () => {});
+        const worker = await creation;
+        if (!worker || !current()) return null;
+        await worker.setParameters({ tessedit_pageseg_mode: lang === 'ja' ? Tesseract.PSM.AUTO : Tesseract.PSM.SINGLE_BLOCK, user_defined_dpi: '300', textord_tabfind_vertical_text: plan.verticalText, preserve_interword_spaces: '0' });
         if (!current()) return null;
-        return worker.recognize(input, {}, { text: true, blocks: true });
+        let result = await worker.recognize(input, { rotateAuto: true }, { text: true, blocks: true });
+        if (!current()) return null;
+        if (!result.data.text.trim()) {
+          await worker.setParameters({ tessedit_pageseg_mode: direction === 'vertical' ? Tesseract.PSM.SINGLE_BLOCK_VERT_TEXT : Tesseract.PSM.SINGLE_BLOCK });
+          if (!current()) return null;
+          result = await worker.recognize(input, { rotateAuto: true }, { text: true, blocks: true });
+          if (!current()) return null;
+        }
+        // Deskew small camera tilts; avoid accepting a large, possibly wrong automatic rotation.
+        if (Math.abs(result.data.rotateRadians || 0) > Math.PI/18) result = await worker.recognize(input, {}, { text: true, blocks: true });
+        return result;
       };
       const timeout = new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('사진을 읽는 데 시간이 오래 걸려요. 본문만 잘라 다시 시도해주세요.')), 180000); });
       const result = await Promise.race([run(), abort, timeout]);
       if (!current() || !result) return;
-      const extracted = paragraphsFromOCR(result.data, lang);
+      const extracted = paragraphsFromOCR(result.data, lang, direction);
       if (!extracted.length) throw new Error('글자를 찾지 못했어요. 밝고 선명한 사진을 선택해주세요.');
       if (extracted.join('\n\n').length > 30000) throw new Error('글이 너무 많아요. 사진을 한 페이지씩 나누어주세요.');
       showParagraphs(extracted);
@@ -210,7 +254,8 @@
     } catch (failure) {
       if (!current()) return;
       $('photo-title').textContent = '사진을 다시 확인해주세요'; $('photo-caption').textContent = '다시 시도하거나 글을 직접 입력할 수 있어요.';
-      error(failure.message === 'cancelled' ? '사진 인식을 멈췄어요.' : failure.message+' 인터넷 연결과 선택한 언어도 확인해주세요.');
+      const message = String(failure?.message || failure || '');
+      error(/^[가-힣]/.test(message) ? message : '사진 인식을 완료하지 못했어요. 인터넷 연결과 글 방향을 확인하고 다시 시도해주세요.');
     } finally {
       clearTimeout(deadline); task.cancelled = true; terminateWorker(task);
       if (ocrTask === task) { ocrTask = null; $('ocr-progress').hidden = true; $('rotate').disabled = false; }
@@ -219,12 +264,12 @@
   async function rotatePhoto() {
     if (!photo) return;
     revision++; cancelOCR(); clearResult(); const token = revision;
-    const img = new Image(); img.src = photo;
     try {
-      await img.decode(); if (token !== revision) return;
-      const canvas = document.createElement('canvas'); canvas.width = img.height; canvas.height = img.width;
-      const ctx = canvas.getContext('2d'); ctx.translate(canvas.width/2, canvas.height/2); ctx.rotate(Math.PI/2); ctx.drawImage(img, -img.width/2, -img.height/2);
-      photo = canvas.toDataURL('image/jpeg', .94); $('image-preview').src = photo; await recognize(token);
+      const original = photo.canvas;
+      const canvas = document.createElement('canvas'); canvas.width = original.height; canvas.height = original.width;
+      const ctx = canvas.getContext('2d'); ctx.translate(canvas.width/2, canvas.height/2); ctx.rotate(Math.PI/2); ctx.drawImage(original, -original.width/2, -original.height/2);
+      if (!await setPhoto(canvas, token)) return;
+      await recognize(token);
     } catch { if (token === revision) error('사진을 회전하지 못했어요. 다시 선택해주세요.'); }
   }
 
@@ -243,11 +288,13 @@
     error('인식을 취소했어요. 사진을 다시 읽거나 직접 입력할 수 있어요.');
   });
   document.querySelectorAll('input[name="language"]').forEach(input => input.addEventListener('change', () => {
+    $('layout-field').hidden = language() !== 'ja';
     revision++; cancelOCR(); player.stop();
     if (photo) recognize(revision);
     else if (!$('text-editor').hidden) updateVoiceWarning();
     else if (paragraphs.length) showParagraphs(paragraphs);
   }));
+  $('layout').addEventListener('change', () => { revision++; cancelOCR(); player.stop(); if (photo) recognize(revision); });
   $('play-all').addEventListener('click', () => {
     const state = player.getState();
     if (state.scope === 'all' && state.status === 'playing') player.pause();

@@ -5,6 +5,28 @@
     ko: { name: '한국어', locale: 'ko-KR', ocr: 'kor' },
     en: { name: '영어', locale: 'en-US', ocr: 'eng' }
   };
+  const MODEL_REVISION = 'e12c65a915945e4c28e237a9b52bc4a8f39a0cec';
+  function ocrPlan(lang, layout = 'auto') {
+    if (lang !== 'ja') return { langs: LANGUAGES[lang].ocr, verticalText: '0', options: {} };
+    return {
+      langs: layout === 'horizontal' ? 'jpn' : layout === 'vertical' ? 'jpn_vert' : ['jpn', 'jpn_vert'],
+      verticalText: layout === 'horizontal' ? '0' : '1',
+      options: {
+        langPath: 'https://cdn.jsdelivr.net/gh/tesseract-ocr/tessdata_best@' + MODEL_REVISION,
+        gzip: false,
+        // Never reuse the old compressed/integer model cached under the same language name.
+        cachePath: 'sorinote-best-' + MODEL_REVISION.slice(0, 12)
+      }
+    };
+  }
+  function rasterSize(width, height) {
+    if (!(width > 0 && height > 0 && Number.isFinite(width) && Number.isFinite(height))) throw new Error('사진 크기를 확인할 수 없어요.');
+    const scale = Math.min(2, 3600 / Math.max(width, height), Math.sqrt(6000000 / (width * height)));
+    const contentWidth = Math.max(1, Math.round(width * scale));
+    const contentHeight = Math.max(1, Math.round(height * scale));
+    const padding = Math.max(16, Math.round(Math.min(contentWidth, contentHeight) * .01));
+    return { contentWidth, contentHeight, padding, width: contentWidth + padding * 2, height: contentHeight + padding * 2 };
+  }
   function cleanText(text, lang) {
     let clean = String(text || '').replace(/\r\n?/g, '\n').replace(/[ \t]+\n/g, '\n').trim();
     if (lang === 'ja') clean = clean.replace(/([\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー々。、！？「」『』（）])[ \t]+(?=[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー々。、！？「」『』（）])/gu, '$1');
@@ -16,27 +38,54 @@
   function splitParagraphs(text, lang) {
     return String(text || '').replace(/\r\n?/g, '\n').trim().split(/\n[ \t]*\n+/).map(paragraph => joinLines(paragraph, lang)).filter(Boolean);
   }
-  function paragraphsFromOCR(data, lang) {
+  function paragraphsFromOCR(data, lang, layout = 'auto') {
     const blocks = Array.isArray(data?.blocks) ? data.blocks : [];
     const paragraphs = blocks.flatMap(block => {
       const entries = Array.isArray(block.paragraphs) ? block.paragraphs : [];
       const fallback = () => entries.map(paragraph => joinLines(paragraph.text || (paragraph.lines || []).map(line => line.text || (line.words || []).map(word => word.text || '').join(' ')).join('\n'), lang)).filter(Boolean);
-      const lines = entries.flatMap(paragraph => paragraph.lines || []).map(line => ({
-        text: line.text || (line.words || []).map(word => word.text || '').join(' '), bbox: line.bbox
-      })).filter(line => line.text.trim());
-      if (lines.length < 2 || lines.some(line => !line.bbox || !Number.isFinite(line.bbox.y0) || !Number.isFinite(line.bbox.y1))) return fallback();
-      const heights = lines.map(line => Math.max(1, line.bbox.y1-line.bbox.y0)).sort((a,b) => a-b);
-      const height = heights[Math.floor(heights.length/2)];
-      const pitches = lines.slice(1).map((line,i) => line.bbox.y0-lines[i].bbox.y0).filter(pitch => pitch > 0).sort((a,b) => a-b);
-      const normalPitch = Math.min(pitches[Math.floor((pitches.length-1)/4)] || height*1.5, height*1.8);
-      const left = Math.min(...lines.map(line => line.bbox.x0));
+      const rawLines = entries.flatMap((paragraph, paragraphIndex) => (paragraph.lines || []).map(line => ({
+        text: line.text || (line.words || []).map(word => word.text || '').join(' '), bbox: line.bbox, words: line.words || [], paragraphIndex
+      }))).filter(line => line.text.trim());
+      if (rawLines.length < 2 || rawLines.some(line => !line.bbox || !['x0','x1','y0','y1'].every(key => Number.isFinite(line.bbox[key])))) return fallback();
+      if (lang === 'ja' && layout === 'auto') {
+        const directions = rawLines.map(line => {
+          const ratio = (line.bbox.y1-line.bbox.y0)/Math.max(1,line.bbox.x1-line.bbox.x0);
+          return ratio > 2 ? 'vertical' : ratio < .5 ? 'horizontal' : null;
+        });
+        if (directions.includes('vertical') && directions.includes('horizontal')) {
+          const runs = [];
+          rawLines.forEach((line, index) => {
+            const direction = directions[index] || runs[runs.length-1]?.direction || directions.find(Boolean);
+            if (runs[runs.length-1]?.direction !== direction) runs.push({ direction, lines: [] });
+            runs[runs.length-1].lines.push(line);
+          });
+          return runs.flatMap(run => paragraphsFromOCR({ blocks: [{ paragraphs: [{ lines: run.lines }] }] }, lang, run.direction));
+        }
+      }
+      const median = values => { const sorted = values.slice().sort((a,b) => a-b); return sorted[Math.floor(sorted.length/2)]; };
+      const vertical = lang === 'ja' && (layout === 'vertical' || (layout === 'auto' && median(rawLines.map(line => (line.bbox.y1-line.bbox.y0)/Math.max(1,line.bbox.x1-line.bbox.x0))) > 2));
+      // Map vertical columns to the same axes as horizontal lines: advance right-to-left,
+      // while paragraph indentation is measured downward from the top of the page.
+      const axis = bbox => vertical ? { start: bbox.y0, end: bbox.y1, cross: -bbox.x1, crossEnd: -bbox.x0 } : { start: bbox.x0, end: bbox.x1, cross: bbox.y0, crossEnd: bbox.y1 };
+      const lines = rawLines.map(line => ({ ...line, ...axis(line.bbox) }));
+      if (vertical) lines.sort((a,b) => a.cross-b.cross);
+      const glyphSizes = rawLines.flatMap(line => line.words).filter(word => word.bbox && /[\p{L}\p{N}]/u.test(word.text || '')).map(word => {
+        const box = axis(word.bbox); return box.crossEnd-box.cross;
+      }).filter(size => size > 0);
+      const height = glyphSizes.length ? median(glyphSizes) : median(lines.map(line => Math.max(1,line.crossEnd-line.cross)));
+      const pitches = lines.slice(1).map((line,i) => line.cross-lines[i].cross).filter(pitch => pitch > 0).sort((a,b) => a-b);
+      const normalPitch = Math.min(pitches[Math.floor((pitches.length-1)/4)] || height*1.5, height*1.9);
+      const left = Math.min(...lines.map(line => line.start));
+      const span = Math.max(...lines.map(line => line.end-line.start));
       const groups = [[]];
       lines.forEach((line, index) => {
         if (index) {
           const previous = lines[index-1];
-          const gap = line.bbox.y0-previous.bbox.y0 > Math.max(normalPitch*1.6, height*2.2);
-          const indented = line.bbox.x0-left > height*.7 && previous.bbox.x0-left < height*.5 && /[。！？.!?][」』”’\"]?$/.test(previous.text.trim());
-          if (gap || indented) groups.push([]);
+          const gap = line.cross-previous.cross > Math.max(normalPitch*1.6, height*2.2);
+          const indent = line.start-left;
+          const indented = indent > height*.65 && indent < height*2.6 && previous.start-left < height*.5;
+          const shortEnding = line.paragraphIndex !== previous.paragraphIndex && previous.end-previous.start < span*.72 && /[。！？.!?][」』”’\"]?$/.test(previous.text.trim());
+          if (gap || indented || shortEnding) groups.push([]);
         }
         groups[groups.length-1].push(line.text);
       });
@@ -122,7 +171,7 @@
     }
     return { play, pause, resume, stop, getState: () => ({ ...state }) };
   }
-  const api = { LANGUAGES, cleanText, splitParagraphs, paragraphsFromOCR, speechChunks, createPlayback };
+  const api = { LANGUAGES, ocrPlan, rasterSize, cleanText, splitParagraphs, paragraphsFromOCR, speechChunks, createPlayback };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.StudyCore = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
