@@ -38,6 +38,64 @@
   function splitParagraphs(text, lang) {
     return String(text || '').replace(/\r\n?/g, '\n').trim().split(/\n[ \t]*\n+/).map(paragraph => joinLines(paragraph, lang)).filter(Boolean);
   }
+  function cleanOCRLine(text, lang) {
+    let value = String(text || '').replace(/[①-⑳㉑-㊿]/gu, '').replace(/(?:_{2,}|[＿─━]{2,})/g, '');
+    // Match an item label, never decimals, dates, amounts, or a Japanese long vowel.
+    value = value.replace(/^\s*(?:(?:[（(]\s*[0-9０-９]{1,3}\s*[）)])|(?:[0-9０-９]{1,3}\s*[.．)）]))\s*(?![0-9０-９])(?=[\p{L}「『（(])/u, '');
+    return cleanText(value,lang);
+  }
+  function filterOCRData(data, lang) {
+    if (!Array.isArray(data?.blocks)) return { ...data, text: String(data?.text || '').split('\n').map(line => cleanOCRLine(line,lang)).join('\n') };
+    const lines = data.blocks.flatMap(block => (block.paragraphs || []).flatMap(paragraph => paragraph.lines || []));
+    const bottom = Math.max(1,...lines.map(line => line.bbox?.y1 || 0));
+    const top = Math.min(bottom,...lines.map(line => line.bbox?.y0 ?? bottom));
+    const span = bottom-top;
+    const bodyLines = lines.filter(line => /\p{L}/u.test(line.text || '') && line.bbox);
+    const x0 = Math.min(...bodyLines.map(line => line.bbox.x0)), x1 = Math.max(...bodyLines.map(line => line.bbox.x1));
+    const filtered = { ...data, blocks: data.blocks.map(block => ({ ...block, paragraphs: (block.paragraphs || []).map(paragraph => ({
+      ...paragraph, text: paragraph.lines?.length ? '' : cleanOCRLine(paragraph.text || '',lang), lines: (paragraph.lines || []).map(line => {
+        const text = cleanOCRLine(line.text || (line.words || []).map(word => word.text || '').join(' '),lang);
+        const numberOnly = /^[-–—]?\s*[0-9０-９]{1,4}\s*[-–—]?$/.test(text);
+        const margin = bodyLines.length && line.bbox && ((line.bbox.y1 < top+span*.075 || line.bbox.y0 > bottom-span*.075) || line.bbox.x1 < x0 || line.bbox.x0 > x1);
+        return { ...line, text: numberOnly && margin ? '' : text };
+      }).filter(line => line.text.trim())
+    })).filter(paragraph => paragraph.lines.length || paragraph.text) })).filter(block => block.paragraphs.length) };
+    if (lang !== 'ja') return filtered;
+    const getLines = block => block.paragraphs.flatMap(p=>p.lines || []);
+    const all = filtered.blocks.flatMap(getLines), columns = all.filter(line=>line.bbox && line.bbox.y1-line.bbox.y0>(line.bbox.x1-line.bbox.x0)*3 && /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(line.text));
+    const attached = new Set();
+    if (data.pageWidth && data.pageHeight) {
+      const body = all.filter(line=>line.bbox && line.bbox.x1-line.bbox.x0>(line.bbox.y1-line.bbox.y0)*5 && /\p{L}/u.test(line.text));
+      const heights = body.map(line=>line.bbox.y1-line.bbox.y0).sort((a,b)=>a-b), font = heights[Math.floor(heights.length/2)] || 0;
+      const last = Math.max(0,...body.filter(line=>line.text.replace(/\s/g,'').length>6).map(line=>line.bbox.y1));
+      for (const line of all) {
+        const b=line.bbox,short=line.text.replace(/\s/g,''); if (!b || !font || !last) continue;
+        const center=(b.x0+b.x1)/2;
+        if (short.length<=4 && !/\p{Script=Han}/u.test(short) && b.y0>data.pageHeight*.8 && b.y0>last+font*3 && b.x1-b.x0<font*4 && b.y1-b.y0<font*.8 && center>data.pageWidth*.3 && center<data.pageWidth*.7) attached.add(line);
+      }
+    }
+    for (const line of all) {
+      if (!/^[oO。0]{1,3}$/.test(line.text.trim()) || !line.bbox) continue;
+      const b=line.bbox;
+      const target=columns.find(column=>{const c=column.bbox,size=c.x1-c.x0;return b.x1-b.x0<size*.55 && b.y1-b.y0<size*.55 && b.x0>=c.x0-size*.3 && b.x1<=c.x1+size*.3 && b.y0>=c.y1-size*.1 && b.y0<=c.y1+size*1.8;});
+      if (target) { if (!/[。！？][」』]?\s*$/.test(target.text)) target.text=target.text.trimEnd()+'。'; attached.add(line); }
+    }
+    filtered.blocks=filtered.blocks.map(block=>({...block,paragraphs:block.paragraphs.map(p=>({...p,lines:p.lines.filter(line=>!attached.has(line))})).filter(p=>p.lines.length||p.text)})).filter(block=>block.paragraphs.length);
+    const flow=[];
+    const boxOf = lines => ({x0:Math.min(...lines.map(l=>l.bbox.x0)),y0:Math.min(...lines.map(l=>l.bbox.y0)),x1:Math.max(...lines.map(l=>l.bbox.x1)),y1:Math.max(...lines.map(l=>l.bbox.y1))});
+    const direction = lines => lines.length && lines.every(l=>l.bbox) ? lines.every(l=>l.bbox.y1-l.bbox.y0>(l.bbox.x1-l.bbox.x0)*2)?'vertical':lines.every(l=>l.bbox.x1-l.bbox.x0>(l.bbox.y1-l.bbox.y0)*2)?'horizontal':null : null;
+    for (const block of filtered.blocks) {
+      const previous=flow.at(-1),currentLines=getLines(block),previousLines=previous?getLines(previous):[],dir=direction(currentLines);
+      if (!previous || !dir || dir!==direction(previousLines)) { flow.push(block); continue; }
+      const a=boxOf(previousLines),b=boxOf(currentLines),last=previousLines.at(-1).bbox,first=currentLines[0].bbox;
+      const size=dir==='vertical'?last.x1-last.x0:last.y1-last.y0,other=dir==='vertical'?first.x1-first.x0:first.y1-first.y0;
+      const overlap=dir==='vertical'?Math.max(0,Math.min(a.y1,b.y1)-Math.max(a.y0,b.y0))/Math.max(1,Math.min(a.y1-a.y0,b.y1-b.y0)):Math.max(0,Math.min(a.x1,b.x1)-Math.max(a.x0,b.x0))/Math.max(1,Math.min(a.x1-a.x0,b.x1-b.x0));
+      const gap=dir==='vertical'?last.x0-first.x1:first.y0-last.y1;
+      if (Math.abs(size-other)<size*.35 && overlap>.7 && gap>=0 && gap<size*(dir==='vertical'?2.2:1.5)) { previous.paragraphs.push(...block.paragraphs); previous.bbox=boxOf([...previousLines,...currentLines]); }
+      else flow.push(block);
+    }
+    return {...filtered,blocks:flow};
+  }
   function paragraphsFromOCR(data, lang, layout = 'auto') {
     const blocks = Array.isArray(data?.blocks) ? data.blocks : [];
     const paragraphs = blocks.flatMap(block => {
@@ -101,6 +159,7 @@
     return cleanText(repaired,'ja');
   }
   function documentFromOCR(data, lang, layout = 'auto') {
+    data = filterOCRData(data,lang);
     if (lang !== 'ja' || !Array.isArray(data?.blocks) || !data.blocks.length) return { paragraphs: paragraphsFromOCR(data, lang, layout).map(text => lang === 'ja' ? repairOCRQuotes(text) : text), annotations: [] };
     const paragraphs = [], annotations = [];
     const allEntries = data.blocks.flatMap(block => block.paragraphs || []);
@@ -180,50 +239,68 @@
       return chunks;
     });
   }
+  function sentenceRanges(text, lang) {
+    const segments = typeof Intl !== 'undefined' && Intl.Segmenter ? Array.from(new Intl.Segmenter(LANGUAGES[lang]?.locale || 'en-US',{granularity:'sentence'}).segment(text),item => ({text:item.segment,start:item.index,end:item.index+item.segment.length})) : [{text,start:0,end:text.length}];
+    return segments.filter(segment => segment.text.length);
+  }
+  function readingUnits(text,lang) {
+    let cursor = 0;
+    const sentences = sentenceRanges(text,lang);
+    return speechChunks(text,lang).map(chunk => {
+      const start = text.indexOf(chunk,cursor), end = start+chunk.length; cursor = end;
+      const sentence = sentences.find(part => part.start <= start && part.end > start) || {start,end};
+      return {text:chunk,start,end,sentenceStart:sentence.start,sentenceEnd:sentence.end};
+    });
+  }
   function createPlayback({ synth, makeUtterance, onChange = () => {}, onError = () => {}, getRate = () => 1, getVoice = () => null, schedule = setTimeout, unschedule = clearTimeout }) {
     let generation = 0, timer = null, pending = null, liveUtterance = null;
-    let groups = [], state = { status: 'idle', paragraph: -1, chunk: 0, scope: 'all', lang: 'ja' };
+    let groups = [], state = { status: 'idle', paragraph: -1, chunk: 0, scope: 'all', lang: 'ja', repeat: false, cycle: 1, rangeStart: -1, rangeEnd: -1 };
     const notify = () => onChange({ ...state });
     function stop() {
       generation++;
       if (timer !== null) unschedule(timer);
       timer = null; pending = null; liveUtterance = null;
       if (synth) synth.cancel();
-      state = { ...state, status: 'idle', paragraph: -1, chunk: 0 };
+      state = { ...state, status: 'idle', paragraph: -1, chunk: 0, repeat: false, rangeStart: -1, rangeEnd: -1 };
       notify();
     }
     function speak(token) {
       if (token !== generation || state.status !== 'playing') return;
-      notify();
-      const u = makeUtterance(groups[state.paragraph][state.chunk]);
+      const unit = groups[state.paragraph][state.chunk];
+      state.rangeStart = unit.sentenceStart; state.rangeEnd = unit.sentenceEnd; notify();
+      const u = makeUtterance(unit.text);
       liveUtterance = u; u.lang = LANGUAGES[state.lang].locale; u.rate = getRate();
       const voice = getVoice(state.lang); if (voice) u.voice = voice;
       u.onend = () => {
         if (token !== generation || !['playing', 'paused'].includes(state.status)) return;
         liveUtterance = null;
-        let paragraph = state.paragraph, chunk = state.chunk + 1;
+        let paragraph = state.paragraph, chunk = state.chunk + 1, cycle = state.cycle, repeating = false;
         if (chunk >= groups[paragraph].length) {
-          if (state.scope === 'paragraph' || paragraph + 1 >= groups.length) { state.status = 'finished'; notify(); return; }
-          paragraph++; chunk = 0;
+          if (state.scope === 'paragraph' && state.repeat) { chunk = 0; cycle++; repeating = true; }
+          else {
+            if (state.scope === 'paragraph' || paragraph + 1 >= groups.length) { state.status = 'finished'; notify(); return; }
+            paragraph++; chunk = 0;
+          }
         }
-        pending = { paragraph, chunk };
+        pending = { paragraph, chunk, cycle, repeating };
         if (state.status === 'paused') return;
         timer = schedule(() => {
           timer = null;
           if (token !== generation || state.status !== 'playing' || !pending) return;
-          Object.assign(state, pending); pending = null; speak(token);
-        }, chunk === 0 ? 380 : 90);
+          if (pending.repeating && !state.repeat) { pending = null; state.status = 'finished'; notify(); return; }
+          const {repeating,...next} = pending; Object.assign(state,next); pending = null; speak(token);
+        }, repeating ? 650 : chunk === 0 ? 380 : 90);
       };
       u.onerror = event => { if (token !== generation) return; stop(); onError(event.error || 'unknown'); };
       try { if (synth.paused) synth.resume(); synth.speak(u); }
       catch { if (token === generation) { stop(); onError('unavailable'); } }
     }
-    function play(paragraphs, index, scope, lang) {
+    function play(paragraphs, index, scope, lang, options = {}) {
       stop();
       if (!synth || !Object.hasOwn(LANGUAGES, lang) || !paragraphs.length) return false;
-      groups = paragraphs.map(text => speechChunks(text, lang));
+      groups = paragraphs.map(text => readingUnits(text, lang));
       if (groups.some(group => !group.length)) return false;
-      state = { status: 'playing', paragraph: Math.max(0, Math.min(index, groups.length - 1)), chunk: 0, scope, lang };
+      state = { status: 'playing', paragraph: Math.max(0, Math.min(index, groups.length - 1)), chunk: 0, scope, lang, repeat: scope === 'paragraph' && Boolean(options.repeat), cycle: 1, rangeStart: -1, rangeEnd: -1 };
       speak(generation); return true;
     }
     function pause() {
@@ -236,12 +313,16 @@
     function resume() {
       if (state.status !== 'paused') return;
       state.status = 'playing';
-      if (pending) { Object.assign(state, pending); pending = null; speak(generation); }
+      if (pending) {
+        if (pending.repeating && !state.repeat) { pending = null; state.status = 'finished'; notify(); return; }
+        const {repeating,...next} = pending; Object.assign(state,next); pending = null; speak(generation);
+      }
       else if (liveUtterance) { synth.resume(); notify(); }
     }
-    return { play, pause, resume, stop, getState: () => ({ ...state }) };
+    function setRepeat(repeat) { state.repeat = state.scope === 'paragraph' && Boolean(repeat); notify(); }
+    return { play, pause, resume, stop, setRepeat, getState: () => ({ ...state }) };
   }
-  const api = { LANGUAGES, ocrPlan, rasterSize, cleanText, splitParagraphs, paragraphsFromOCR, documentFromOCR, uncertainLines, preferLine, speechChunks, createPlayback };
+  const api = { LANGUAGES, ocrPlan, rasterSize, cleanText, cleanOCRLine, filterOCRData, splitParagraphs, paragraphsFromOCR, documentFromOCR, uncertainLines, preferLine, sentenceRanges, readingUnits, speechChunks, createPlayback };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.StudyCore = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -19,5 +19,23 @@
 /core.js
   Cache-Control: no-cache
 
+/reading.js
+  Cache-Control: no-cache
+
+/ocr-clean.js
+  Cache-Control: no-cache
+
+/image-worker.js
+  Cache-Control: no-cache
+
+/furigana-worker.js
+  Cache-Control: no-cache
+
+/vendor/*
+  Cache-Control: public, max-age=604800
+
+/vendor/dict/*
+  Content-Type: application/octet-stream
+
 /style.css
   Cache-Control: no-cache
