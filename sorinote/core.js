@@ -253,27 +253,49 @@
     });
   }
   function createPlayback({ synth, makeUtterance, onChange = () => {}, onError = () => {}, getRate = () => 1, getVoice = () => null, schedule = setTimeout, unschedule = clearTimeout }) {
-    let generation = 0, timer = null, pending = null, liveUtterance = null;
+    let generation = 0, timer = null, rateTimer = null, rateLimit = null, pending = null, liveUtterance = null, offset = 0;
     let groups = [], state = { status: 'idle', paragraph: -1, chunk: 0, scope: 'all', lang: 'ja', repeat: false, cycle: 1, rangeStart: -1, rangeEnd: -1 };
     const notify = () => onChange({ ...state });
+    function clearRateTimers() {
+      if (rateTimer !== null) unschedule(rateTimer);
+      if (rateLimit !== null) unschedule(rateLimit);
+      rateTimer = null; rateLimit = null;
+    }
+    const rateChanged = () => liveUtterance && Math.abs(liveUtterance.rate-getRate()) > .0001;
+    function continuePending(token) {
+      timer = null;
+      if (token !== generation || state.status !== 'playing' || !pending) return;
+      if (pending.repeating && !state.repeat) { pending = null; state.status = 'finished'; notify(); return; }
+      const {repeating,start=0,...next} = pending;
+      Object.assign(state,next); pending = null; speak(token,start);
+    }
     function stop() {
       generation++;
       if (timer !== null) unschedule(timer);
-      timer = null; pending = null; liveUtterance = null;
+      clearRateTimers();
+      timer = null; pending = null; liveUtterance = null; offset = 0;
       if (synth) synth.cancel();
       state = { ...state, status: 'idle', paragraph: -1, chunk: 0, repeat: false, rangeStart: -1, rangeEnd: -1 };
       notify();
     }
-    function speak(token) {
+    function speak(token, start = 0) {
       if (token !== generation || state.status !== 'playing') return;
       const unit = groups[state.paragraph][state.chunk];
       state.rangeStart = unit.sentenceStart; state.rangeEnd = unit.sentenceEnd; notify();
-      const u = makeUtterance(unit.text);
+      offset = start;
+      const u = makeUtterance(unit.text.slice(start));
       liveUtterance = u; u.lang = LANGUAGES[state.lang].locale; u.rate = getRate();
       const voice = getVoice(state.lang); if (voice) u.voice = voice;
+      const rememberPosition = event => {
+        if (token !== generation || liveUtterance !== u || !Number.isInteger(event.charIndex)) return;
+        // Keep an utterance-relative boundary, including after repeated changes.
+        // Never estimate a position from time: that could skip unspoken text.
+        if (event.charIndex >= 0 && start + event.charIndex < unit.text.length) offset = Math.max(offset,start + event.charIndex);
+      };
+      u.onboundary = rememberPosition; u.onpause = rememberPosition;
       u.onend = () => {
-        if (token !== generation || !['playing', 'paused'].includes(state.status)) return;
-        liveUtterance = null;
+        if (token !== generation || liveUtterance !== u || !['playing', 'paused'].includes(state.status)) return;
+        liveUtterance = null; offset = 0;
         let paragraph = state.paragraph, chunk = state.chunk + 1, cycle = state.cycle, repeating = false;
         if (chunk >= groups[paragraph].length) {
           if (state.scope === 'paragraph' && state.repeat) { chunk = 0; cycle++; repeating = true; }
@@ -284,15 +306,10 @@
         }
         pending = { paragraph, chunk, cycle, repeating };
         if (state.status === 'paused') return;
-        timer = schedule(() => {
-          timer = null;
-          if (token !== generation || state.status !== 'playing' || !pending) return;
-          if (pending.repeating && !state.repeat) { pending = null; state.status = 'finished'; notify(); return; }
-          const {repeating,...next} = pending; Object.assign(state,next); pending = null; speak(token);
-        }, repeating ? 650 : chunk === 0 ? 380 : 90);
+        timer = schedule(() => continuePending(token), repeating ? 650 : chunk === 0 ? 380 : 90);
       };
-      u.onerror = event => { if (token !== generation) return; stop(); onError(event.error || 'unknown'); };
-      try { if (synth.paused) synth.resume(); synth.speak(u); }
+      u.onerror = event => { if (token !== generation || liveUtterance !== u) return; stop(); onError(event.error || 'unknown'); };
+      try { synth.resume(); synth.speak(u); }
       catch { if (token === generation) { stop(); onError('unavailable'); } }
     }
     function play(paragraphs, index, scope, lang, options = {}) {
@@ -307,20 +324,42 @@
       if (state.status !== 'playing') return;
       state.status = 'paused';
       if (timer !== null) { unschedule(timer); timer = null; }
+      clearRateTimers();
       if (liveUtterance) synth.pause();
       notify();
     }
     function resume() {
       if (state.status !== 'paused') return;
       state.status = 'playing';
-      if (pending) {
-        if (pending.repeating && !state.repeat) { pending = null; state.status = 'finished'; notify(); return; }
-        const {repeating,...next} = pending; Object.assign(state,next); pending = null; speak(generation);
+      if (pending) continuePending(generation);
+      else if (liveUtterance) {
+        if (rateChanged()) replaceAtPosition();
+        else { synth.resume(); notify(); }
       }
-      else if (liveUtterance) { synth.resume(); notify(); }
+    }
+    function replaceAtPosition() {
+      if (state.status !== 'playing' || !rateChanged()) return;
+      // Changing rate on an already spoken utterance is undefined by the API.
+      // Cancel only this generation and continue from its last reported word.
+      // Voices without boundary events replay the current speech chunk instead.
+      const token = ++generation;
+      pending = {paragraph:state.paragraph,chunk:state.chunk,cycle:state.cycle,start:offset};
+      liveUtterance = null; synth.cancel(); synth.resume();
+      // Give the engine time to release a cancelled/paused utterance before
+      // enqueueing its replacement (needed by some desktop and mobile voices).
+      timer = schedule(() => continuePending(token),60);
+    }
+    function updateRate() {
+      if (rateTimer !== null) { unschedule(rateTimer); rateTimer = null; }
+      if (state.status !== 'playing' || !rateChanged()) { clearRateTimers(); return; }
+      const token = generation;
+      const apply = () => { clearRateTimers(); if (token === generation) replaceAtPosition(); };
+      // Coalesce quick movements, but also apply during a continuous drag.
+      rateTimer = schedule(apply,150);
+      if (rateLimit === null) rateLimit = schedule(apply,450);
     }
     function setRepeat(repeat) { state.repeat = state.scope === 'paragraph' && Boolean(repeat); notify(); }
-    return { play, pause, resume, stop, setRepeat, getState: () => ({ ...state }) };
+    return { play, pause, resume, stop, setRepeat, updateRate, getState: () => ({ ...state }) };
   }
   const api = { LANGUAGES, ocrPlan, rasterSize, cleanText, cleanOCRLine, filterOCRData, splitParagraphs, paragraphsFromOCR, documentFromOCR, uncertainLines, preferLine, sentenceRanges, readingUnits, speechChunks, createPlayback };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

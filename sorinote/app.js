@@ -78,6 +78,12 @@
     onChange: renderPlayback,
     onError: () => toast('음성을 재생하지 못했어요. 기기의 음성 설치와 소리 설정을 확인하고 다시 눌러주세요.')
   });
+  function updateRateDisplay() {
+    const input=$('rate'),value=Number(input.value);
+    $('rate-value').textContent=value.toFixed(2)+'×';
+    input.setAttribute('aria-valuetext',value.toFixed(2)+'배속');
+    input.style.setProperty('--speed-fill',((value-Number(input.min))/(Number(input.max)-Number(input.min))*100)+'%');
+  }
   function paintParagraph(index) {
     const body = $('paragraphs').querySelectorAll('.paragraph-text')[index]; if (!body) return;
     const text = paragraphs[index]; body.replaceChildren();
@@ -183,7 +189,7 @@
     photo = null;
     $('image-preview').removeAttribute('src'); $('photo-preview').hidden = true;
     $('image-input').value = ''; $('camera-input').value = '';
-    $('rate').value = '1'; $('toast').hidden = true; clearTimeout(toastTimer);
+    $('rate').value = '1'; updateRateDisplay(); $('toast').hidden = true; clearTimeout(toastTimer);
     document.body.classList.remove('has-content');
     if (scroll) window.scrollTo({ top: 0, behavior: 'instant' });
   }
@@ -601,15 +607,12 @@
     else player.play(paragraphs, 0, 'all', language());
   });
   $('stop').addEventListener('click', () => player.stop());
-  $('rate').addEventListener('change', () => {
-    const state = player.getState();
-    if (['playing', 'paused'].includes(state.status)) { player.play(paragraphs, state.paragraph, state.scope, language(),{repeat:state.repeat}); if (state.status === 'paused') player.pause(); }
-  });
+  $('rate').addEventListener('input', () => { updateRateDisplay(); player.updateRate(); });
   $('dropzone').addEventListener('dragover', event => { event.preventDefault(); $('dropzone').classList.add('dragover'); });
   $('dropzone').addEventListener('dragleave', () => $('dropzone').classList.remove('dragover'));
   $('dropzone').addEventListener('drop', event => { event.preventDefault(); $('dropzone').classList.remove('dragover'); acceptPhoto(event.dataTransfer.files[0]); });
   document.addEventListener('dragover', event => event.preventDefault()); document.addEventListener('drop', event => event.preventDefault());
   window.addEventListener('pagehide', () => { revision++; cancelOCR(); player.stop(); });
   if (synth) synth.addEventListener('voiceschanged', updateVoiceWarning);
-  updateVoiceWarning(); renderPlayback(player.getState());
+  updateRateDisplay(); updateVoiceWarning(); renderPlayback(player.getState());
 })();
