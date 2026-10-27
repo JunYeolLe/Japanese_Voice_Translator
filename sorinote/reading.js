@@ -39,6 +39,38 @@
     return segments;
   }
   function plainCopy(paragraphs){return paragraphs.join('\n\n');}
-  const api={hiragana,hasKanji,splitReading,rubySegments,plainCopy};
+  function createFuriganaController({load,onChange=()=>{}}){
+    let generation=0,job=null;
+    const empty=()=>({status:'idle',visible:false,tokens:null,stage:'',error:''});
+    let state=empty();
+    const snapshot=()=>({...state});
+    const notify=()=>onChange(snapshot());
+    function reset(){generation++;job=null;state=empty();notify();}
+    function toggle(paragraphs){
+      // A second activation while the dictionary is loading must not cancel
+      // the first request or start another request for the same document.
+      if(state.status==='loading')return job;
+      if(state.tokens){state.visible=!state.visible;notify();return Promise.resolve(snapshot());}
+      const token=++generation,items=paragraphs.slice();
+      state={...empty(),status:'loading',stage:'dictionary'};notify();
+      job=Promise.resolve().then(()=>{
+        if(token!==generation)return null;
+        return load(items,stage=>{
+          if(token!==generation||state.status!=='loading')return;
+          state.stage=stage;notify();
+        });
+      }).then(tokens=>{
+        if(token!==generation)return snapshot();
+        if(!Array.isArray(tokens)||tokens.length!==items.length||tokens.some(part=>!Array.isArray(part)))throw new Error('후리가나 결과를 받지 못했어요. 다시 시도해주세요.');
+        state={status:'ready',visible:true,tokens,stage:'',error:''};notify();return snapshot();
+      }).catch(error=>{
+        if(token!==generation)return snapshot();
+        state={...empty(),status:'error',error:error?.message||'후리가나를 준비하지 못했어요. 다시 시도해주세요.'};notify();return snapshot();
+      }).finally(()=>{if(token===generation)job=null;});
+      return job;
+    }
+    return {toggle,reset,getState:snapshot};
+  }
+  const api={hiragana,hasKanji,splitReading,rubySegments,plainCopy,createFuriganaController};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.StudyReading=api;
 })(typeof globalThis!=='undefined'?globalThis:this);

@@ -1,13 +1,13 @@
 'use strict';
 (() => {
   const { LANGUAGES, ocrPlan, rasterSize, splitParagraphs, documentFromOCR, uncertainLines, preferLine, sentenceRanges, createPlayback } = StudyCore;
-  const { rubySegments, hiragana, plainCopy } = StudyReading;
+  const { rubySegments, hiragana, plainCopy, createFuriganaController } = StudyReading;
   const $ = id => document.getElementById(id);
   const synth = window.speechSynthesis;
   let paragraphs = [], annotations = [], photo = null, revision = 0, ocrTask = null, scriptPromise = null;
   let toastTimer = null, lastActiveParagraph = -1, lastSentenceKey = '';
   let initializationGate = Promise.resolve();
-  let documentVersion = 0, showFurigana = false, furiganaTokens = null, readingOverrides = [], readingTarget = null;
+  let showFurigana = false, furiganaTokens = null, readingOverrides = [], readingTarget = null;
   let furiganaWorker = null, furiganaRequest = 0, furiganaPending = new Map();
   let cropState = null, cropDrag = null, cropResume = false;
   const language = () => document.querySelector('input[name="language"]:checked').value;
@@ -99,43 +99,48 @@
     }
   }
   function paintReadings() {
-    paragraphs.forEach((_,index)=>paintParagraph(index));
+    // Apply ruby line spacing before inserting annotations so the first render
+    // has the same layout as subsequent hide/show operations.
     document.body.classList.toggle('has-furigana',showFurigana && Boolean(furiganaTokens));
-    $('furigana-toggle').setAttribute('aria-pressed',String(showFurigana));
-    $('furigana-toggle').textContent = showFurigana ? '후리가나 끄기' : '후리가나 켜기';
+    paragraphs.forEach((_,index)=>paintParagraph(index));
+    const state=furigana.getState(),loading=state.status==='loading';
+    $('furigana-toggle').disabled=loading;
+    $('furigana-toggle').setAttribute('aria-busy',String(loading));
+    $('furigana-toggle').setAttribute('aria-pressed',String(showFurigana && Boolean(furiganaTokens)));
+    $('furigana-toggle').textContent = loading ? '후리가나 준비 중…' : showFurigana ? '후리가나 끄기' : state.status==='error' ? '후리가나 다시 시도' : '후리가나 켜기';
     renderPlayback(player.getState());
   }
-  function requestFurigana(items) {
+  const furigana=createFuriganaController({load:requestFurigana,onChange:state=>{
+    showFurigana=state.visible;furiganaTokens=state.tokens;
+    $('furigana-status').hidden=state.status==='idle'||(state.status==='ready'&&!state.visible);
+    $('furigana-status').textContent=state.status==='loading'
+      ? state.stage==='readings' ? '읽는 법을 붙이고 있어요. 완료되면 자동으로 표시됩니다.' : '사전을 준비하고 있어요. 완료되면 자동으로 표시됩니다.'
+      : state.status==='error' ? state.error : '작은 읽는 법을 누르면 수정할 수 있어요.';
+    paintReadings();
+  }});
+  function requestFurigana(items,onProgress) {
     if (!furiganaWorker) {
-      furiganaWorker = new Worker('furigana-worker.js?v=5');
-      furiganaWorker.onmessage = event => { const pending = furiganaPending.get(event.data.id); if (!pending) return; clearTimeout(pending.timer); furiganaPending.delete(event.data.id); event.data.error ? pending.reject(new Error(event.data.error)) : pending.resolve(event.data.tokens); };
-      furiganaWorker.onerror = () => {
-        for (const pending of furiganaPending.values()) { clearTimeout(pending.timer); pending.reject(new Error('후리가나 사전을 준비하지 못했어요. 다시 켜주세요.')); }
-        furiganaPending.clear(); furiganaWorker.terminate(); furiganaWorker = null;
+      const worker=new Worker('furigana-worker.js?v=6');furiganaWorker=worker;
+      worker.onmessage = event => {
+        const pending=furiganaPending.get(event.data.id);if(!pending||pending.worker!==worker)return;
+        if(event.data.status){pending.onProgress?.(event.data.status);return;}
+        clearTimeout(pending.timer);furiganaPending.delete(event.data.id);
+        event.data.error?pending.reject(new Error(event.data.error)):pending.resolve(event.data.tokens);
+      };
+      worker.onerror = () => {
+        for(const [id,pending] of furiganaPending){if(pending.worker!==worker)continue;clearTimeout(pending.timer);furiganaPending.delete(id);pending.reject(new Error('후리가나 사전을 준비하지 못했어요. 다시 시도해주세요.'));}
+        worker.terminate();if(furiganaWorker===worker)furiganaWorker=null;
       };
     }
     const id = ++furiganaRequest;
     return new Promise((resolve,reject) => {
-      const timer = setTimeout(() => { furiganaPending.delete(id); reject(new Error('후리가나 준비에 시간이 걸려요. 연결을 확인하고 다시 켜주세요.')); },90000);
-      furiganaPending.set(id,{resolve,reject,timer}); furiganaWorker.postMessage({id,paragraphs:items});
+      const timer = setTimeout(() => { furiganaPending.delete(id); reject(new Error('후리가나 준비에 시간이 걸려요. 연결을 확인하고 다시 시도해주세요.')); },180000);
+      furiganaPending.set(id,{resolve,reject,timer,worker:furiganaWorker,onProgress});furiganaWorker.postMessage({id,paragraphs:items,progress:true});
     });
   }
-  async function toggleFurigana() {
+  function toggleFurigana() {
     if (language() !== 'ja') return;
-    showFurigana = !showFurigana;
-    if (!showFurigana) { $('furigana-status').hidden = true; paintReadings(); return; }
-    if (furiganaTokens) { $('furigana-status').textContent = '작은 읽는 법을 누르면 수정할 수 있어요.'; $('furigana-status').hidden = false; paintReadings(); return; }
-    const version = documentVersion;
-    $('furigana-status').textContent = '후리가나 사전을 준비해요. 처음에만 시간이 조금 걸려요.'; $('furigana-status').hidden = false; paintReadings();
-    try {
-      const tokens = await requestFurigana(paragraphs.slice());
-      if (version !== documentVersion) return;
-      furiganaTokens = tokens;
-      $('furigana-status').textContent = '작은 읽는 법을 누르면 수정할 수 있어요.'; $('furigana-status').hidden = !showFurigana; paintReadings();
-    } catch (failure) {
-      if (version !== documentVersion || !showFurigana) return;
-      showFurigana = false; paintReadings(); $('furigana-status').textContent = failure.message;
-    }
+    return furigana.toggle(paragraphs);
   }
   async function copyAll() {
     const text = plainCopy(paragraphs); if (!text) return;
@@ -159,7 +164,7 @@
   }
   function clearResult() {
     player.stop(); paragraphs = []; annotations = []; lastActiveParagraph = -1;
-    documentVersion++; furiganaTokens = null; readingOverrides = []; showFurigana = false; document.body.classList.remove('has-furigana'); $('furigana-status').hidden = true;
+    furigana.reset();readingOverrides=[];
     readingTarget = null; $('reading-word').textContent = ''; $('reading-value').value = ''; $('copy-text').value = '';
     // Release the dictionary before starting another OCR engine on a phone.
     if (furiganaWorker) { furiganaWorker.terminate(); furiganaWorker = null; }
@@ -184,7 +189,7 @@
   }
   function showParagraphs(items, notes = []) {
     player.stop(); paragraphs = items; annotations = notes; lastActiveParagraph = -1;
-    documentVersion++; furiganaTokens = null; readingOverrides = []; showFurigana = false; document.body.classList.remove('has-furigana'); $('furigana-status').hidden = true;
+    furigana.reset();readingOverrides=[];
     $('paragraph-count').textContent = items.length+'개'; $('paragraphs').replaceChildren();
     const appendNotes = before => notes.filter(note => note.before === before).forEach(note => {
       const item = document.createElement('li'); item.className = 'reading-note';
