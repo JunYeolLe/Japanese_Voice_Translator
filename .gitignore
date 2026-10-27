@@ -1,0 +1,11 @@
+node_modules/
+.netlify/
+.env
+.env.*
+!.env.example
+*.traineddata
+*.traineddata.gz
+소리노트_백업_*.json
+.DS_Store
+Thumbs.db
+ocr-lab/

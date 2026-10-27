@@ -1,9 +1,9 @@
 'use strict';
 (() => {
-  const { LANGUAGES, ocrPlan, rasterSize, splitParagraphs, paragraphsFromOCR, createPlayback } = StudyCore;
+  const { LANGUAGES, ocrPlan, rasterSize, splitParagraphs, documentFromOCR, uncertainLines, preferLine, createPlayback } = StudyCore;
   const $ = id => document.getElementById(id);
   const synth = window.speechSynthesis;
-  let paragraphs = [], photo = null, revision = 0, ocrTask = null, scriptPromise = null;
+  let paragraphs = [], annotations = [], photo = null, revision = 0, ocrTask = null, scriptPromise = null;
   let toastTimer = null, lastActiveParagraph = -1;
   let initializationGate = Promise.resolve();
   const language = () => document.querySelector('input[name="language"]:checked').value;
@@ -39,7 +39,7 @@
     $('status-dot').classList.toggle('playing', state.status === 'playing');
     $('play-status').textContent = active ? (state.paragraph+1)+' / '+paragraphs.length+' 단락 · '+(state.status === 'paused' ? '잠깐 멈췄어요' : '듣고 있어요')
       : state.status === 'finished' ? (state.scope === 'all' ? '끝까지 들었어요. 다시 들어볼까요?' : '이 단락을 다 들었어요.') : '듣고 싶은 단락을 골라보세요.';
-    const cards = [...$('paragraphs').children];
+    const cards = [...$('paragraphs').querySelectorAll('.paragraph')];
     cards.forEach((card, i) => {
       const current = active && i === state.paragraph;
       card.classList.toggle('active', current);
@@ -79,7 +79,7 @@
     $('ocr-progress').hidden = true; $('rotate').disabled = false;
   }
   function clearResult() {
-    player.stop(); paragraphs = []; lastActiveParagraph = -1;
+    player.stop(); paragraphs = []; annotations = []; lastActiveParagraph = -1;
     $('paragraphs').replaceChildren(); $('results').hidden = true; $('player-bar').hidden = true;
     $('source-text').value = ''; $('text-count').textContent = '0자';
     $('text-editor').hidden = true; $('error-panel').hidden = true;
@@ -95,10 +95,17 @@
     document.body.classList.remove('has-content');
     if (scroll) window.scrollTo({ top: 0, behavior: 'instant' });
   }
-  function showParagraphs(items) {
-    player.stop(); paragraphs = items; lastActiveParagraph = -1;
+  function showParagraphs(items, notes = []) {
+    player.stop(); paragraphs = items; annotations = notes; lastActiveParagraph = -1;
     $('paragraph-count').textContent = items.length+'개'; $('paragraphs').replaceChildren();
+    const appendNotes = before => notes.filter(note => note.before === before).forEach(note => {
+      const item = document.createElement('li'); item.className = 'reading-note';
+      const label = document.createElement('span'); label.textContent = note.kind === 'source' ? '출처 · 듣기에서 제외' : '생략 표시 · 듣기에서 제외';
+      const text = document.createElement('p'); text.lang = language(); text.textContent = note.text;
+      item.append(label, text); $('paragraphs').append(item);
+    });
     items.forEach((text, index) => {
+      appendNotes(index);
       const card = document.createElement('li'); card.className = 'paragraph';
       const top = document.createElement('div'); top.className = 'paragraph-top';
       const label = document.createElement('span'); label.className = 'paragraph-label'; label.textContent = 'PARAGRAPH '+String(index+1).padStart(2, '0');
@@ -112,6 +119,7 @@
       const body = document.createElement('p'); body.className = 'paragraph-text'; body.lang = language(); body.textContent = text;
       top.append(label, button); card.append(top, body); $('paragraphs').append(card);
     });
+    appendNotes(items.length);
     $('source-text').value = items.join('\n\n'); updateTextCount();
     $('results').hidden = false; $('player-bar').hidden = false; $('text-editor').hidden = true;
     document.body.classList.add('has-content', 'has-results');
@@ -135,7 +143,8 @@
     if (!text.trim()) { toast('읽을 글을 먼저 입력해주세요.'); $('source-text').focus(); return; }
     if (text.length > 30000) { toast('한 번에 30,000자까지 읽을 수 있어요.'); return; }
     $('error-panel').hidden = true;
-    showParagraphs(splitParagraphs(text, language()));
+    const edited = splitParagraphs(text, language());
+    showParagraphs(edited, annotations.map(note => ({ ...note, before: note.kind === 'source' ? edited.length : Math.min(note.before, edited.length) })));
     $('source-text').blur();
     scrollTo($('results'));
   }
@@ -155,7 +164,12 @@
       const context = canvas.getContext('2d'); context.fillStyle = '#fff'; context.fillRect(0, 0, canvas.width, canvas.height);
       context.imageSmoothingEnabled = true; context.imageSmoothingQuality = 'high';
       context.drawImage(img, size.padding, size.padding, size.contentWidth, size.contentHeight);
-      if (!await setPhoto(canvas, token)) return;
+      // Retain a bounded source for local rescans, without expanding a small glyph twice.
+      const source = document.createElement('canvas');
+      const sourceScale = Math.min(1, size.contentWidth/img.width);
+      source.width = Math.max(1,Math.round(img.width*sourceScale)); source.height = Math.max(1,Math.round(img.height*sourceScale));
+      source.getContext('2d').drawImage(img,0,0,source.width,source.height);
+      if (!await setPhoto(canvas, token, { source, padding: size.padding, scale: size.contentWidth/source.width })) return;
       $('photo-title').textContent = '사진에서 글자를 읽고 있어요'; $('photo-caption').textContent = '준비가 끝나면 단락별로 나누어드릴게요.';
       await recognize(token);
     } catch {
@@ -163,7 +177,7 @@
       $('ocr-progress').hidden = true; error('사진을 열지 못했어요. 다른 JPG·PNG 사진을 선택해주세요.');
     } finally { URL.revokeObjectURL(url); }
   }
-  async function setPhoto(canvas, token) {
+  async function setPhoto(canvas, token, original = {}) {
     // OCR receives the lossless full canvas. Only the small preview is resized.
     const preview = document.createElement('canvas');
     const scale = Math.min(1, 480/Math.max(canvas.width, canvas.height));
@@ -173,7 +187,7 @@
     if (token !== revision) return false;
     if (!blob) throw new Error('사진을 준비하지 못했어요.');
     if (photo) URL.revokeObjectURL(photo.previewURL);
-    photo = { canvas, previewURL: URL.createObjectURL(blob) };
+    photo = { canvas, previewURL: URL.createObjectURL(blob), ...original };
     $('image-preview').src = photo.previewURL; $('photo-preview').hidden = false;
     return true;
   }
@@ -192,8 +206,8 @@
   async function recognize(token = revision) {
     if (!photo) return;
     cancelOCR(); clearResult();
-    const input = photo.canvas, lang = language(), direction = layout(), plan = ocrPlan(lang, direction);
-    const task = { worker: null, cancelled: false, terminated: false, abort: null };
+    const input = photo.canvas, original = photo, lang = language(), direction = layout(), plan = ocrPlan(lang, direction);
+    const task = { worker: null, cancelled: false, terminated: false, abort: null, refining: false };
     const abort = new Promise((_, reject) => { task.abort = () => reject(new Error('cancelled')); });
     ocrTask = task; $('ocr-progress').hidden = false; $('rotate').disabled = true;
     $('ocr-status').textContent = '글자를 읽을 준비를 하고 있어요…'; $('progress').value = 0;
@@ -210,6 +224,7 @@
           workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/worker.min.js',
           logger: event => {
             if (!current()) return;
+            if (task.refining) return;
             const reading = event.status === 'recognizing text';
             const downloading = event.status === 'loading language traineddata';
             $('progress').value = reading ? .3 + .7*(event.progress || 0) : downloading ? .05 + .25*(event.progress || 0) : .03;
@@ -239,17 +254,51 @@
         }
         // Deskew small camera tilts; avoid accepting a large, possibly wrong automatic rotation.
         if (Math.abs(result.data.rotateRadians || 0) > Math.PI/18) result = await worker.recognize(input, {}, { text: true, blocks: true });
+        if (!current()) return null;
+        if (lang === 'ja' && direction !== 'vertical' && original.source && Math.abs(result.data.rotateRadians || 0) < .001) {
+          const lines = uncertainLines(result.data);
+          if (lines.length) {
+            task.refining = true;
+            await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SINGLE_LINE, textord_tabfind_vertical_text: '0' });
+            for (const [index,line] of lines.entries()) {
+              if (!current()) return null;
+              $('ocr-status').textContent = '헷갈리는 글자를 다시 확인해요 · '+(index+1)+' / '+lines.length;
+              $('progress').value = .85 + .15*index/lines.length;
+              const box = line.bbox, margin = Math.max(4,(box.y1-box.y0)/original.scale*.25);
+              const left = Math.max(0,Math.floor((box.x0-original.padding)/original.scale-margin));
+              const top = Math.max(0,Math.floor((box.y0-original.padding)/original.scale-margin));
+              const right = Math.min(original.source.width,Math.ceil((box.x1-original.padding)/original.scale+margin));
+              const bottom = Math.min(original.source.height,Math.ceil((box.y1-original.padding)/original.scale+margin));
+              if (right <= left || bottom <= top) continue;
+              const factors = [Math.min(1.5,36/Math.max(1,(box.y1-box.y0)/original.scale))];
+              if (/[|｜]/.test(line.text)) factors.push(Math.min(2,48/Math.max(1,(box.y1-box.y0)/original.scale)));
+              for (const factor of factors) {
+                if (!current()) return null;
+                const crop = document.createElement('canvas'); crop.width = Math.round((right-left)*factor)+20; crop.height = Math.round((bottom-top)*factor)+20;
+                const ctx = crop.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0,0,crop.width,crop.height);
+                ctx.imageSmoothingQuality = 'high'; ctx.drawImage(original.source,left,top,right-left,bottom-top,10,10,crop.width-20,crop.height-20);
+                let rescanned;
+                try { rescanned = await worker.recognize(crop, {}, { text: true, blocks: true }); }
+                catch { if (!current()) return null; break; } // A failed optional rescan must not discard readable text.
+                if (!current()) return null;
+                const candidate = { text: rescanned.data.text, confidence: rescanned.data.confidence, words: (rescanned.data.blocks || []).flatMap(block => (block.paragraphs || []).flatMap(paragraph => (paragraph.lines || []).flatMap(row => row.words || []))) };
+                if (preferLine(line,candidate)) { line.text = candidate.text; line.confidence = candidate.confidence; }
+              }
+            }
+          }
+        }
         return result;
       };
       const timeout = new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('사진을 읽는 데 시간이 오래 걸려요. 본문만 잘라 다시 시도해주세요.')), 180000); });
       const result = await Promise.race([run(), abort, timeout]);
       if (!current() || !result) return;
-      const extracted = paragraphsFromOCR(result.data, lang, direction);
+      const extractedDocument = documentFromOCR(result.data, lang, direction);
+      const extracted = extractedDocument.paragraphs;
       if (!extracted.length) throw new Error('글자를 찾지 못했어요. 밝고 선명한 사진을 선택해주세요.');
       if (extracted.join('\n\n').length > 30000) throw new Error('글이 너무 많아요. 사진을 한 페이지씩 나누어주세요.');
-      showParagraphs(extracted);
+      showParagraphs(extracted, extractedDocument.annotations);
       $('photo-title').textContent = extracted.length+'개 단락을 찾았어요';
-      $('photo-caption').textContent = '틀린 글자나 단락은 ‘글 수정’에서 고칠 수 있어요.';
+      $('photo-caption').textContent = extractedDocument.annotations.length ? '본문만 읽어요. 생략 표시와 출처는 따로 표시했어요.' : '틀린 글자나 단락은 ‘글 수정’에서 고칠 수 있어요.';
       scrollTo($('results'));
     } catch (failure) {
       if (!current()) return;
@@ -265,10 +314,14 @@
     if (!photo) return;
     revision++; cancelOCR(); clearResult(); const token = revision;
     try {
-      const original = photo.canvas;
-      const canvas = document.createElement('canvas'); canvas.width = original.height; canvas.height = original.width;
-      const ctx = canvas.getContext('2d'); ctx.translate(canvas.width/2, canvas.height/2); ctx.rotate(Math.PI/2); ctx.drawImage(original, -original.width/2, -original.height/2);
-      if (!await setPhoto(canvas, token)) return;
+      const original = photo;
+      const rotate = image => {
+        const canvas = document.createElement('canvas'); canvas.width = image.height; canvas.height = image.width;
+        const ctx = canvas.getContext('2d'); ctx.translate(canvas.width/2, canvas.height/2); ctx.rotate(Math.PI/2); ctx.drawImage(image, -image.width/2, -image.height/2);
+        return canvas;
+      };
+      const source = original.source ? { source: rotate(original.source), padding: original.padding, scale: original.scale } : {};
+      if (!await setPhoto(rotate(original.canvas), token, source)) return;
       await recognize(token);
     } catch { if (token === revision) error('사진을 회전하지 못했어요. 다시 선택해주세요.'); }
   }

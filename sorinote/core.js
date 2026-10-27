@@ -93,6 +93,76 @@
     }).filter(Boolean);
     return paragraphs.length ? paragraphs : splitParagraphs(data?.text || '', lang);
   }
+  function repairOCRQuotes(text) {
+    // Only repair a stranded closing quote: a short Japanese quotation, a bar,
+    // then Japanese continuation, with no real closing quote before the next sentence.
+    // Literal bars in balanced quotations, Latin text, and equations are preserved.
+    const repaired = text.replace(/「([^「」|｜\n]{1,80})[|｜](?=[ \t]*[\p{Script=Hiragana}、。！？]|$)(?![^「。！？\n]*」)/gu, (match,content) => /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(content) ? '「'+content.trimEnd()+'」' : match);
+    return cleanText(repaired,'ja');
+  }
+  function documentFromOCR(data, lang, layout = 'auto') {
+    if (lang !== 'ja' || !Array.isArray(data?.blocks) || !data.blocks.length) return { paragraphs: paragraphsFromOCR(data, lang, layout).map(text => lang === 'ja' ? repairOCRQuotes(text) : text), annotations: [] };
+    const paragraphs = [], annotations = [];
+    const allEntries = data.blocks.flatMap(block => block.paragraphs || []);
+    const omission = text => /^[（(]\s*(?:中略|前略|後略|以下略|略)\s*[）)]$/.test(text.replace(/\s/g, ''));
+    for (const block of data.blocks) {
+      let pending = [];
+      const flush = () => {
+        if (pending.length) paragraphs.push(...paragraphsFromOCR({ blocks: [{ ...block, paragraphs: pending }] }, lang, layout));
+        pending = [];
+      };
+      for (const entry of block.paragraphs || []) {
+        const text = joinLines(entry.text || (entry.lines || []).map(line => line.text || '').join('\n'), lang);
+        // A short, complete bibliographic parenthesis at the very end is a source,
+        // not another body paragraph. Ordinary parenthetical sentences stay in the body.
+        const source = entry === allEntries.at(-1) && (entry.lines || []).length <= 3 && /^[（(].*[『「].*[』」].*(?:による|より|から抜粋|から引用)\s*[）)]$/.test(text);
+        if (source || omission(text)) {
+          flush(); annotations.push({ before: paragraphs.length, kind: source ? 'source' : 'omission', text });
+          continue;
+        }
+        // Some pages put an omission marker and the next body paragraph in one OCR object.
+        let lines = [];
+        for (const line of entry.lines || []) {
+          if (omission(joinLines(line.text, lang))) {
+            if (lines.length) pending.push({ ...entry, lines, text: '' });
+            lines = []; flush(); annotations.push({ before: paragraphs.length, kind: 'omission', text: joinLines(line.text, lang) });
+          } else lines.push(line);
+        }
+        if (lines.length) pending.push({ ...entry, lines, text: '' });
+        else if (!(entry.lines || []).length && text) pending.push(entry);
+      }
+      flush();
+    }
+    const body = paragraphs.length || annotations.length ? paragraphs : paragraphsFromOCR(data,lang,layout);
+    return { paragraphs: body.map(repairOCRQuotes), annotations };
+  }
+  function uncertainLines(data, limit = 6) {
+    return (data?.blocks || []).flatMap(block => (block.paragraphs || []).flatMap(paragraph => paragraph.lines || []))
+      .filter(line => line.bbox && line.bbox.x1-line.bbox.x0 > (line.bbox.y1-line.bbox.y0)*4 && /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(line.text || '') &&
+        ((line.words || []).some(word => word.confidence < 60) || /[|｜]/.test(line.text || '')))
+      .sort((a,b) => Math.min(...(a.words || []).map(word => word.confidence),100)-Math.min(...(b.words || []).map(word => word.confidence),100))
+      .slice(0, limit);
+  }
+  function preferLine(original, candidate) {
+    const a = cleanText(original.text,'ja').replace(/\s/g,''), b = cleanText(candidate.text,'ja').replace(/\s/g,'');
+    if (!a || !b || a === b || Math.abs(b.length-a.length) > Math.max(2,a.length*.1) || !Number.isFinite(candidate.confidence)) return false;
+    const pipes = text => (text.match(/[|｜]/g) || []).length;
+    const imbalance = text => Math.abs((text.match(/「/g) || []).length-(text.match(/」/g) || []).length)+Math.abs((text.match(/『/g) || []).length-(text.match(/』/g) || []).length);
+    if (pipes(b) > pipes(a) || imbalance(b) > imbalance(a)) return false;
+    // A local rescan may fix a few uncertain glyphs; it must not rewrite a sentence.
+    let row = Array.from({ length:b.length+1 }, (_,i) => i);
+    for (let i=1; i<=a.length; i++) {
+      const next = [i];
+      for (let j=1; j<=b.length; j++) next[j] = Math.min(next[j-1]+1,row[j]+1,row[j-1]+(a[i-1]===b[j-1]?0:1));
+      row = next;
+    }
+    if (row[b.length] > Math.max(3, Math.floor(a.length*.08))) return false;
+    const score = line => {
+      const words = line.words || [];
+      return (line.confidence || 0) - words.reduce((sum,word) => sum+Math.max(0,70-word.confidence),0)/Math.max(1,words.length);
+    };
+    return candidate.confidence >= (original.confidence || 0)-1 && score(candidate) >= score(original)+1;
+  }
   // Paragraph cards stay intact. Shorter speech chunks improve phone playback.
   function speechChunks(text, lang) {
     const locale = LANGUAGES[lang]?.locale || 'en-US';
@@ -171,7 +241,7 @@
     }
     return { play, pause, resume, stop, getState: () => ({ ...state }) };
   }
-  const api = { LANGUAGES, ocrPlan, rasterSize, cleanText, splitParagraphs, paragraphsFromOCR, speechChunks, createPlayback };
+  const api = { LANGUAGES, ocrPlan, rasterSize, cleanText, splitParagraphs, paragraphsFromOCR, documentFromOCR, uncertainLines, preferLine, speechChunks, createPlayback };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.StudyCore = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

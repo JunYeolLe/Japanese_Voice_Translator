@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {ocrPlan, rasterSize, splitParagraphs, paragraphsFromOCR, speechChunks, createPlayback} = require('../sorinote/core.js');
+const {ocrPlan, rasterSize, splitParagraphs, paragraphsFromOCR, documentFromOCR, uncertainLines, preferLine, speechChunks, createPlayback} = require('../sorinote/core.js');
 
 test('일본어는 읽기 방향에 맞는 정밀 모델을 쓰고 기존 모델 캐시와 분리한다', () => {
   assert.deepEqual(ocrPlan('ja','auto').langs,['jpn','jpn_vert']);
@@ -83,6 +83,51 @@ test('같은 OCR 블록 안에 가로 제목과 세로 본문이 섞여 있어�
   const line=(text,x,y,width,height)=>({text,bbox:{x0:x,y0:y,x1:x+width,y1:y+height}});
   const data={blocks:[{paragraphs:[{lines:[line('横書きの見出し',30,10,700,40),line('最初です',370,100,40,600),line('続きです',300,50,40,650),line('次の段落です',120,100,40,600),line('終わりです',50,50,40,650)]}]}]};
   assert.deepEqual(paragraphsFromOCR(data,'ja','auto'),['横書きの見出し','最初です続きです','次の段落です終わりです']);
+});
+test('독립된 생략 표시와 마지막 출처는 본문 단락 사이에 별도로 보존한다', () => {
+  const line=(text,y,x=50)=>({text,bbox:{x0:x,y0:y,x1:800,y1:y+40}});
+  const data={blocks:[{paragraphs:[
+    {lines:[line('第一の段落です。',50,90),line('続きを読みます。',110)]},
+    {lines:[line('第二の段落です。',170,90),line('ここまでです。',230)]},
+    {lines:[line('(中 略 )',290,400)]},
+    {lines:[line('最後の段落です。',350,90),line('終わりです。',410)]},
+    {lines:[line('(山田『ことばの本』',470,300),line('による )',530,500)]}
+  ]}]};
+  assert.deepEqual(documentFromOCR(data,'ja'),{paragraphs:['第一の段落です。続きを読みます。','第二の段落です。ここまでです。','最後の段落です。終わりです。'],annotations:[{before:2,kind:'omission',text:'(中略 )'},{before:3,kind:'source',text:'(山田『ことばの本』による )'}]});
+});
+test('같은 OCR 객체에 섞인 독립 생략 표시는 다음 단락에 붙이지 않는다', () => {
+  const line=(text,y)=>({text,bbox:{x0:50,y0:y,x1:800,y1:y+40}});
+  const data={blocks:[{paragraphs:[{lines:[line('前の文章です。',50),line('（中略）',110),line('次の文章です。',170)]}]}]};
+  assert.deepEqual(documentFromOCR(data,'ja'),{paragraphs:['前の文章です。','次の文章です。'],annotations:[{before:1,kind:'omission',text:'（中略）'}]});
+});
+test('문장 속 중략·괄호와 본문에 있는 인용은 삭제하지 않는다', () => {
+  const data={blocks:[{paragraphs:[{text:'これは（中略）という表記です。'},{text:'（山田『ことばの本』による）'},{text:'この出典について考えます。'}]}]};
+  assert.deepEqual(documentFromOCR(data,'ja'),{paragraphs:['これは（中略）という表記です。','（山田『ことばの本』による）','この出典について考えます。'],annotations:[]});
+  assert.deepEqual(documentFromOCR({text:'First.\n\nSecond.'},'en'),{paragraphs:['First.','Second.'],annotations:[]});
+});
+test('불확실한 가로 줄만 재검사하고 세로 본문은 제외하며 작업 수를 제한한다', () => {
+  const line=(text,confidence,width=500,height=30)=>({text,confidence:90,bbox:{x0:0,y0:0,x1:width,y1:height},words:[{text,confidence}]});
+  const low=line('不確かな文字です。',30), high=line('明確な文字です。',95), vertical=line('縦書きです。',10,30,500), quote=line('「引用 | です。',80);
+  const data={blocks:[{paragraphs:[{lines:[high,vertical,quote,low]}]}]};
+  assert.deepEqual(uncertainLines(data),[low,quote]);assert.deepEqual(uncertainLines(data,1),[low]);
+});
+test('OCR의 짧은 인용문에서만 닫는 괄호로 잘못 읽힌 세로 막대를 복원한다', () => {
+  const extract=text=>documentFromOCR({text},'ja').paragraphs[0];
+  assert.equal(extract('「自由研究 | の続きです。'),'「自由研究」の続きです。');
+  assert.equal(extract('「条件 | 記号」の説明です。'),'「条件 | 記号」の説明です。');
+  assert.equal(extract('「A | B」の式です。'),'「A | B」の式です。');
+  assert.equal(extract('「自由研究」の続きです。'),'「自由研究」の続きです。');
+  assert.deepEqual(splitParagraphs('「自由研究 | の続きです。','ja'),['「自由研究 | の続きです。']);
+});
+test('줄 재인식은 신뢰도가 좋아지는 작은 수정만 채택한다', () => {
+  const line=(text,confidence,wordConfidence=confidence)=>({text,confidence,words:[{text,confidence:wordConfidence}]});
+  assert.equal(preferLine(line('今日は上晴れです。',88,35),line('今日は晴れです。',92,95)),true);
+  assert.equal(preferLine(line('今日は晴れです。',94),line('今日は上晴れです。',89,35)),false);
+  assert.equal(preferLine(line('今日は晴れです。',88,35),line('今日は晴れです。',95)),false);
+  assert.equal(preferLine(line('今日は晴れです。続きの文章を読みます。',88,35),line('今日は晴れです。',98)),false);
+  assert.equal(preferLine(line('今日は晴れです。',88,35),line('全然違う文章です。',98)),false);
+  assert.equal(preferLine(line('「引用」です。',88,35),line('「引用 | です。',98)),false);
+  assert.equal(preferLine(line('「引用」です。',88,35),line('引用」です。',98)),false);
 });
 function harness() {
   let scheduled = new Map(), nextId = 0, rate = 1;
