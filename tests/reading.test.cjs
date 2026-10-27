@@ -4,7 +4,7 @@ const {hiragana,splitReading,rubySegments,plainCopy}=require('../sorinote/readin
 const {cleanRules,cleanLayout}=require('../sorinote/ocr-clean');
 test('문항 번호만 제외하고 날짜·금액·소수·장음·밑줄 친 본문은 보존한다',()=>{
  for(const input of ['1. 日本語を読みます。','1 . 日本語を読みます。','①日本語を読みます。','② 日本語を読みます。','（12）日本語を読みます。'])assert.equal(cleanOCRLine(input,'ja'),'日本語を読みます。');
- for(const input of ['2026年10月27日です。','1.5リットルです。','1月は寒いです。','1000円です。','コーヒーを一つください。'])assert.equal(cleanOCRLine(input,'ja'),input);
+ for(const input of ['2026年10月27日です。','1.5リットルです。','1月は寒いです。','1000円です。','コーヒーを一つください。','㊊は休みです。','㊑会社です。'])assert.equal(cleanOCRLine(input,'ja'),input);
  assert.equal(cleanOCRLine('本文を②読みます。','ja'),'本文を読みます。');
  assert.equal(cleanOCRLine('＿＿＿\n本文です。','ja'),'本文です。');
 });

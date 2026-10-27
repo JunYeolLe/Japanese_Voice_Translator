@@ -39,7 +39,7 @@
     return String(text || '').replace(/\r\n?/g, '\n').trim().split(/\n[ \t]*\n+/).map(paragraph => joinLines(paragraph, lang)).filter(Boolean);
   }
   function cleanOCRLine(text, lang) {
-    let value = String(text || '').replace(/[①-⑳㉑-㊿]/gu, '').replace(/(?:_{2,}|[＿─━]{2,})/g, '');
+    let value = String(text || '').replace(/[①-⑳㉑-㉟㊱-㊿]/gu, '').replace(/(?:_{2,}|[＿─━]{2,})/g, '');
     // Match an item label, never decimals, dates, amounts, or a Japanese long vowel.
     value = value.replace(/^\s*(?:(?:[（(]\s*[0-9０-９]{1,3}\s*[）)])|(?:[0-9０-９]{1,3}\s*[.．)）]))\s*(?![0-9０-９])(?=[\p{L}「『（(])/u, '');
     return cleanText(value,lang);
