@@ -11,6 +11,7 @@
   let furiganaWorker = null, furiganaRequest = 0, furiganaPending = new Map();
   let cropState = null, cropDrag = null, cropResume = false;
   let workspace = null;
+  let sourceMode = 'photo', editorPurpose = 'edit', pasteDraft = '', beforeSentenceSplit = null;
   const language = () => document.querySelector('input[name="language"]:checked').value;
   const layout = () => language() === 'ja' ? $('layout').value : 'horizontal';
   const scrollTo = element => element.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' });
@@ -197,6 +198,7 @@
     $('image-input').value = ''; $('camera-input').value = '';
     $('rate').value = '1'; updateRateDisplay(); $('toast').hidden = true; clearTimeout(toastTimer);
     document.body.classList.remove('has-content');
+    sourceMode='photo';editorPurpose='edit';pasteDraft='';beforeSentenceSplit=null;renderIntake();
     if (scroll) window.scrollTo({ top: 0, behavior: 'instant' });
   }
   function showParagraphs(items, notes = [], records = null, keepUndo = false) {
@@ -234,20 +236,45 @@
     workspace?.setDocument(items,records,keepUndo);
     $('furigana-toggle').hidden = language() !== 'ja'; paintReadings();
     updateVoiceWarning(); renderPlayback(player.getState());
+    renderIntake();
   }
   function updateTextCount() { $('text-count').textContent = $('source-text').value.length.toLocaleString()+'자'; }
-  function openEditor() {
+  function renderIntake() {
+    const textMode=sourceMode==='text';
+    $('photo-mode').setAttribute('aria-selected',String(!textMode));$('photo-mode').tabIndex=textMode?-1:0;
+    $('write-text').setAttribute('aria-selected',String(textMode));$('write-text').tabIndex=textMode?0:-1;
+    $('photo-source').hidden=textMode;$('layout-field').hidden=textMode||language()!=='ja';
+    $('paste-ready').hidden=!textMode||!$('text-editor').hidden;
+    $('another-photo').textContent=textMode?'＋ 다른 글 붙여넣기':'＋ 다른 사진으로 새로 시작';
+  }
+  function chooseSource(mode,{fresh=false}={}) {
+    workspace?.stop();
+    if(editorPurpose==='paste'&&!$('text-editor').hidden)pasteDraft=$('source-text').value;
+    sourceMode=mode;
+    if(mode==='text') {if(fresh)pasteDraft='';openEditor('paste');}
+    else closeEditor();
+    renderIntake();
+  }
+  function openEditor(purpose='edit') {
+    editorPurpose=purpose;beforeSentenceSplit=null;
+    $('source-text').value=purpose==='paste'?pasteDraft:paragraphs.join('\n\n');updateTextCount();
+    $('editor-title').textContent=purpose==='paste'?'글을 붙여넣어 주세요':'읽을 글 확인하기';
+    $('editor-hint').textContent=purpose==='paste'?'복사한 글을 붙여넣거나 직접 입력하세요. 빈 줄 하나가 단락 하나가 됩니다.':'잘못 읽힌 글자를 고쳐주세요. 빈 줄 하나가 단락 하나가 됩니다.';
+    $('apply-text').textContent=purpose==='paste'?'▶ 바로 듣기':'이 글로 듣기 →';
+    $('paste-options').hidden=purpose!=='paste';$('split-pasted').textContent='문장별로 나누기';
     workspace?.stopPractice();
     if (ocrTask) { cancelOCR(); $('photo-caption').textContent = '사진 인식을 멈췄어요. 다시 읽거나 직접 입력할 수 있어요.'; error('직접 입력으로 전환했어요. 사진을 다시 읽으려면 아래 버튼을 눌러주세요.'); }
     player.stop(); $('text-editor').hidden = false; $('results').hidden = true; $('player-bar').hidden = true;
     document.body.classList.remove('has-results'); document.body.classList.add('has-content');
-    scrollTo($('text-editor')); $('source-text').focus({ preventScroll: true });
+    renderIntake();scrollTo(purpose==='paste'?$('intake-card'):$('text-editor')); $('source-text').focus({ preventScroll: true });
   }
   function closeEditor() {
+    if(editorPurpose==='paste'&&!$('text-editor').hidden)pasteDraft=$('source-text').value;
     $('text-editor').hidden = true;
     $('source-text').value = paragraphs.join('\n\n'); updateTextCount();
     if (paragraphs.length) { $('results').hidden = false; $('player-bar').hidden = false; document.body.classList.add('has-results'); }
     else if (!photo) document.body.classList.remove('has-content');
+    if(!paragraphs.length&&sourceMode==='text')sourceMode='photo';renderIntake();
   }
   function applyText() {
     const text = $('source-text').value;
@@ -256,9 +283,19 @@
     $('error-panel').hidden = true;
     const edited = splitParagraphs(text, language());
     revision++; cancelOCR();
-    showParagraphs(edited, annotations.map(note => ({ ...note, before: note.kind === 'source' ? edited.length : Math.min(note.before, edited.length) })));
+    const pasted=editorPurpose==='paste';
+    if(pasted){
+      pasteDraft=text;clearResult();
+      if(photo?.previewURL)URL.revokeObjectURL(photo.previewURL);photo=null;
+      $('image-preview').removeAttribute('src');$('photo-preview').hidden=true;
+      $('image-input').value='';$('camera-input').value='';
+      showParagraphs(edited,[],edited.map(StudyDocument.fresh));
+    } else showParagraphs(edited, annotations.map(note => ({ ...note, before: note.kind === 'source' ? edited.length : Math.min(note.before, edited.length) })));
+    if(!photo)pasteDraft=edited.join('\n\n');
     $('source-text').blur();
     scrollTo($('results'));
+    // Keep speak() in the button's user gesture for mobile browser audio rules.
+    if(pasted&&!player.play(paragraphs,0,'all',language()))toast('본문을 준비했어요. 이 브라우저에서는 음성 재생을 사용할 수 없어요.');
   }
   async function acceptPhoto(file) {
     if (!file) return;
@@ -610,14 +647,22 @@
     finally{clearTimeout(deadline);task.cancelled=true;signal.removeEventListener('abort',abort);terminateWorker(task);}
   }
 
-  $('reset').addEventListener('click', () => { reset(); toast('깨끗하게 비웠어요. 새 사진을 골라주세요.'); });
+  $('reset').addEventListener('click', () => { reset(); toast('깨끗하게 비웠어요. 사진이나 글을 가져와주세요.'); });
   $('take-photo').addEventListener('click', () => $('camera-input').click());
   $('choose-photo').addEventListener('click', () => $('image-input').click());
-  $('another-photo').addEventListener('click', () => { reset(); $('image-input').click(); });
+  $('another-photo').addEventListener('click', () => { if(sourceMode==='text')chooseSource('text',{fresh:true});else {reset();$('image-input').click();} });
   for (const id of ['image-input', 'camera-input']) $(id).addEventListener('change', event => { const file = event.target.files[0]; event.target.value = ''; acceptPhoto(file); });
-  $('write-text').addEventListener('click', openEditor); $('edit-text').addEventListener('click', openEditor);
+  $('photo-mode').addEventListener('click',()=>chooseSource('photo'));
+  $('write-text').addEventListener('click',()=>chooseSource('text'));$('paste-again').addEventListener('click',()=>chooseSource('text',{fresh:true}));
+  $('edit-text').addEventListener('click',()=>openEditor('edit'));
+  for(const id of ['photo-mode','write-text'])$(id).addEventListener('keydown',event=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(event.key)){event.preventDefault();const next=event.key==='Home'?'photo':event.key==='End'?'text':sourceMode==='photo'?'text':'photo';chooseSource(next);$(next==='photo'?'photo-mode':'write-text').focus();}});
   $('close-editor').addEventListener('click', closeEditor); $('apply-text').addEventListener('click', applyText);
-  $('source-text').addEventListener('input', updateTextCount);
+  $('source-text').addEventListener('input',()=>{updateTextCount();beforeSentenceSplit=null;$('split-pasted').textContent='문장별로 나누기';if(editorPurpose==='paste')pasteDraft=$('source-text').value;});
+  $('split-pasted').addEventListener('click',()=>{
+    if(beforeSentenceSplit!==null){$('source-text').value=beforeSentenceSplit;beforeSentenceSplit=null;$('split-pasted').textContent='문장별로 나누기';}
+    else {const text=$('source-text').value;const sentences=splitParagraphs(text,language()).flatMap(p=>sentenceRanges(p,language()).map(s=>p.slice(s.start,s.end).trim()));if(sentences.length<2){toast('두 문장 이상일 때 나눌 수 있어요.');return;}const split=sentences.join('\n\n');if(split.length>30000){toast('문장을 나누면 30,000자를 넘어요. 글을 조금 줄여주세요.');return;}beforeSentenceSplit=text;$('source-text').value=split;$('split-pasted').textContent='원래 단락으로 되돌리기';}
+    pasteDraft=$('source-text').value;updateTextCount();
+  });
   $('retry').addEventListener('click', () => { revision++; recognize(revision); });
   $('rotate').addEventListener('click', rotatePhoto);
   $('crop-photo').addEventListener('click',openCrop);
@@ -638,11 +683,11 @@
     error('인식을 취소했어요. 사진을 다시 읽거나 직접 입력할 수 있어요.');
   });
   document.querySelectorAll('input[name="language"]').forEach(input => input.addEventListener('change', () => {
-    $('layout-field').hidden = language() !== 'ja';
+    renderIntake();
     revision++; cancelOCR(); player.stop();
-    if (photo?.canvas) recognize(revision);
+    if (sourceMode==='photo'&&photo?.canvas) recognize(revision);
     else if (!$('text-editor').hidden) updateVoiceWarning();
-    else if (paragraphs.length) showParagraphs(paragraphs);
+    else if (paragraphs.length) showParagraphs(paragraphs,annotations);
   }));
   $('layout').addEventListener('change', () => { revision++; cancelOCR(); player.stop(); if (photo?.canvas) recognize(revision); });
   $('play-all').addEventListener('click', () => {
@@ -662,7 +707,7 @@
   if (synth) synth.addEventListener('voiceschanged', updateVoiceWarning);
   workspace=StudyWorkspace.create({
     get:()=>({paragraphs,annotations,photo,language:language()}),voiceFor,stop:()=>player.stop(),toast,rescan:rescanRegion,
-    commit:(records,notes,keepUndo)=>{const restore=showFurigana;revision++;cancelOCR();showParagraphs(records.map(r=>r.text),notes,records,keepUndo);if(restore&&language()==='ja')toggleFurigana();}
+    commit:(records,notes,keepUndo)=>{const restore=showFurigana;revision++;cancelOCR();showParagraphs(records.map(r=>r.text),notes,records,keepUndo);if(!photo)pasteDraft=paragraphs.join('\n\n');if(restore&&language()==='ja')toggleFurigana();}
   });
-  updateRateDisplay(); updateVoiceWarning(); renderPlayback(player.getState());
+  renderIntake();updateRateDisplay(); updateVoiceWarning(); renderPlayback(player.getState());
 })();
