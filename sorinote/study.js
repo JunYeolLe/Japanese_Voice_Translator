@@ -42,12 +42,14 @@
   }
   function slice(record,start,end) {
     const part=fresh(record.text.slice(start,end));
+    part.edited=Boolean(record.edited);
     for(const key of ['regions','uncertain'])part[key]=record[key].filter(r=>r.start<end&&r.end>start).map(r=>({...r,start:Math.max(r.start,start)-start,end:Math.min(r.end,end)-start}));
     return part;
   }
   function replace(record,start,end,text) {
     if(!Number.isInteger(start)||!Number.isInteger(end)||start<0||end<=start||end>record.text.length||!text.trim())throw new Error('바꿀 글자 범위와 새 글을 확인해주세요.');
     const next=fresh(record.text.slice(0,start)+text+record.text.slice(end)),delta=text.length-(end-start);
+    next.edited=true;
     for(const key of ['regions','uncertain'])next[key]=record[key].flatMap(r=>{
       if(r.end<=start)return [{...r}];
       if(r.start>=end)return [{...r,start:r.start+delta,end:r.end+delta}];
@@ -58,6 +60,7 @@
   }
   function merge(a,b,lang='ja') {
     const separator=lang==='ja'?'':' ',offset=a.text.length+separator.length,next=fresh(a.text+separator+b.text);
+    next.edited=Boolean(a.edited||b.edited);
     for(const key of ['regions','uncertain'])next[key]=[...a[key],...b[key].map(r=>({...r,start:r.start+offset,end:r.end+offset}))];
     return next;
   }
@@ -67,6 +70,22 @@
     const x=Math.max(0,Math.floor(Math.min(...boxes.map(b=>b.x0))-pad)),y=Math.max(0,Math.floor(Math.min(...boxes.map(b=>b.y0))-pad));
     return {x,y,w:Math.min(width,Math.ceil(Math.max(...boxes.map(b=>b.x1))+pad))-x,h:Math.min(height,Math.ceil(Math.max(...boxes.map(b=>b.y1))+pad))-y};
   }
-  const api={fresh,fromOCR,slice,replace,merge,bounds};
+  function edit(record,value){
+    const text=value.trim();if(!text)throw new Error('단락을 비울 수 없어요. 읽을 글을 입력해주세요.');
+    if(text===record.text)return record;
+    let start=0,end=record.text.length,tail=text.length;
+    while(start<end&&start<tail&&record.text[start]===text[start])start++;
+    while(end>start&&tail>start&&record.text[end-1]===text[tail-1]){end--;tail--;}
+    const next=fresh(text),delta=tail-end;next.edited=true;
+    next.regions=record.regions.flatMap(r=>{
+      if(r.end<=start)return [{...r}];if(r.start>=end)return [{...r,start:r.start+delta,end:r.end+delta}];
+      const a=Math.min(r.start,start),b=Math.max(tail,r.end+delta);return b>a?[{...r,start:a,end:b}]:[];
+    });
+    next.uncertain=record.uncertain.flatMap(r=>r.end<=start?[{...r}]:r.start>=end?[{...r,start:r.start+delta,end:r.end+delta}]:[]);
+    // An entirely replaced/deleted line keeps its source rectangle as a paragraph reference.
+    if(!next.regions.length&&record.regions.length)next.regions=record.regions.map(r=>({...r,start:0,end:text.length}));
+    return next;
+  }
+  const api={fresh,fromOCR,slice,replace,merge,bounds,edit};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.StudyDocument=api;
 })(typeof globalThis!=='undefined'?globalThis:this);

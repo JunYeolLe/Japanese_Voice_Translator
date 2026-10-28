@@ -48,3 +48,9 @@
 
 /workspace.js
   Cache-Control: no-cache
+
+/photo-quality.js
+  Cache-Control: no-cache
+
+/ocr-input.js
+  Cache-Control: no-cache

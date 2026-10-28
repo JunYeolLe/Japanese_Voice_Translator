@@ -1,5 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {createPlayback}=require('../sorinote/core');
+test('선택한 목소리를 본문과 문장 재생에 적용하고 변경 후 새 음성을 사용한다',()=>{let voice={voiceURI:'voice-a'},spoken=[];const player=createPlayback({synth:{cancel(){},pause(){},resume(){},speak:u=>spoken.push(u)},makeUtterance:text=>({text}),getVoice:()=>voice});player.play(['本文です。'],0,'all','ja');assert.equal(spoken[0].voice.voiceURI,'voice-a');player.stop();voice={voiceURI:'voice-b'};player.play(['練習です。'],0,'paragraph','ja');assert.equal(spoken[1].voice.voiceURI,'voice-b');assert.equal(spoken[1].text,'練習です。');player.stop();});
 function harness(){let now=0,id=0,rate=1,cancels=0;const tasks=new Map(),spoken=[];const synth={cancel(){cancels++;},pause(){},resume(){},speak(u){spoken.push(u);}};
 const player=createPlayback({synth,makeUtterance:text=>({text}),getRate:()=>rate,schedule:(fn,delay)=>{tasks.set(++id,{at:now+delay,fn});return id;},unschedule:id=>tasks.delete(id)});
 return {player,spoken,get cancels(){return cancels;},rateTo(value){rate=value;player.updateRate();},advance(ms){const until=now+ms;while(true){const next=[...tasks].filter(([,t])=>t.at<=until).sort((a,b)=>a[1].at-b[1].at)[0];if(!next)break;now=next[1].at;tasks.delete(next[0]);next[1].fn();}now=until;}};}

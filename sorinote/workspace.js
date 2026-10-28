@@ -3,6 +3,7 @@ window.StudyWorkspace={create(bridge){
   const $=id=>document.getElementById(id),D=StudyDocument;
   let records=[],epoch=0,view='read',undo=null,sourceIndex=-1,sourceVersion=0,selection=null,viewport=null,drag=null,target=null;
   let translationCache=new Map(),jobs=new Map(),partial=null,consentWait=null,practiceIndex=0,practiceSentence=-1;
+  const editDrafts=new Map();let activeEditor=null;
   const node=(tag,text,cls)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;};
   const button=(text,fn,cls='secondary')=>{const b=node('button',text,cls);b.type='button';b.addEventListener('click',fn);return b;};
   const read=node('div');read.id='read-view';read.append(...$('main').childNodes);$('main').append(read);
@@ -11,6 +12,7 @@ window.StudyWorkspace={create(bridge){
   const guide=node('section');guide.id='guide-view';guide.hidden=true;guide.className='workspace-guide';
   guide.innerHTML='<span class="eyebrow">KEEP IT SIMPLE</span><h1>사용 안내</h1><h2>사진이나 복사한 글로 듣기</h2><p>본문 가져오기에서 사진으로 읽기 또는 글 붙여넣기를 선택하세요. 붙여넣은 뒤 언어를 고르고 바로 듣기를 누르면 재생됩니다. 빈 줄로 나뉜 원래 단락을 유지하며, 필요할 때 문장별로 나누기를 누를 수 있어요.</p><p>사진을 찍거나 선택하고 필요한 본문만 잘라주세요. 가로·세로가 섞인 교재는 자동·혼합을 선택하세요. 사진의 인쇄 후리가나·밑줄·문항 표시는 구분해 제외하지만 인식 오류가 남을 수 있어요.</p><h2>틀린 부분만 확인하기</h2><p>단락의 원본 확인을 누르면 해당 사진 영역을 볼 수 있어요. 옅은 노란 표시도 눌러보세요. 표시가 없는 글자에도 오류가 있을 수 있어요. 사진에서 영역을 고르고 아래 글에서 바꿀 부분을 선택한 다음 다시 인식하세요. 미리보기를 확인한 뒤 반영해야 본문이 바뀝니다.</p><p>단락의 ⋯ 메뉴에서 합치거나 문장 경계에서 나눌 수 있어요. 부분 재인식·합치기·나누기는 한 단계 되돌릴 수 있어요.</p><h2>후리가나와 듣기</h2><p>후리가나를 처음 켤 때 무료 사전을 준비합니다. 한자 위의 읽는 법을 눌러 수정할 수 있어요. 원문 복사와 음성에는 후리가나·번역·출처를 섞지 않아요. 듣기 속도는 현재 말을 끊지 않고 다음 문장 또는 읽기 구간부터 적용돼요.</p><h2>한국어 뜻 보기</h2><p>일본어 단락만 번역할 수 있어요. 지원되는 기기에서는 브라우저 내 번역을 먼저 시도합니다. 번역 모델을 처음 준비할 때 시간이 걸릴 수 있어요. 지원되지 않으면 전송 안내를 확인하고 MyMemory 무료 번역을 사용할 수 있어요. 자동 번역은 문맥에 따라 틀릴 수 있어요.</p><p>MyMemory 익명 사용 한도는 하루 5,000자이며 제공자 정책과 공용 IP 사용량에 따라 달라질 수 있어요. 한도 초과나 연결 실패 시 안내하며 자동 유료 전환은 없어요.</p><h2>자료는 현재 화면에서만</h2><p>메뉴를 이동해도 사진과 본문은 유지하고 음성은 멈춥니다. 처음부터 새로를 누르거나 페이지를 새로고침·닫으면 자료를 비워요. 사진 OCR은 브라우저에서 처리합니다. 외부 번역을 선택하면 해당 단락의 텍스트만 MyMemory로 전송하며, 서비스 정책상 장기 보관·외부 번역 업체 처리 가능성이 있습니다. 여기서 비워도 외부 서비스 기록까지 삭제되지는 않아요.</p><p><a href="https://mymemory.translated.net/terms-and-conditions" target="_blank" rel="noopener noreferrer">MyMemory 처리·보관 정책</a> · <a href="https://mymemory.translated.net/doc/usagelimits.php" target="_blank" rel="noopener noreferrer">무료 한도</a></p>';
   $('main').append(practice,guide);
+  const featureGuide=node('section');featureGuide.innerHTML='<h2>사진 상태 확인과 바로 수정</h2><p>사진을 고르면 밝기·선명도·해상도·기울기·가장자리 잘림 가능성을 기기 안에서 확인해요. 읽기 좋음이면 바로 인식하고, 경고가 있으면 그대로 읽기 또는 자르기·회전을 선택할 수 있어요. 상태는 추정이며 OCR 정확도를 보장하지 않아요.</p><p>단락의 ⋯ → 글 수정에서 그 단락만 고치고 저장·취소할 수 있어요. 사진이 있으면 원본 보기를 펼쳐 비교하세요. 수정됨 표시와 한 단계 되돌리기를 제공하고 후리가나·번역·듣기에 새 본문을 반영해요. 저장은 현재 화면에만 적용돼요.</p><h2>내게 맞는 목소리</h2><p>읽기 설정 → 읽어주는 목소리에서 고르고 짧게 들어보기로 비교하세요. 선택은 본문 듣기와 문장 연습에 함께 적용돼요. 목소리를 바꾸면 재생을 멈추며 다음 재생부터 적용해요. 기기·브라우저마다 목록이 다르고 일부 음성은 인터넷이 필요해요. 선택은 새로고침하면 초기화돼요.</p>';guide.append(featureGuide);
   const toolbar=document.querySelector('.reading-toolbar'),toolbarAnchor=node('span');toolbar.before(toolbarAnchor);
   const menuButton=button('☰',()=>{menu.hidden=!menu.hidden;menuButton.setAttribute('aria-expanded',String(!menu.hidden));if(!menu.hidden)menu.querySelector('button').focus();},'menu-button');
   menuButton.id='category-toggle';menuButton.setAttribute('aria-label','카테고리 메뉴');menuButton.setAttribute('aria-expanded','false');menuButton.setAttribute('aria-controls','category-menu');
@@ -54,19 +56,22 @@ window.StudyWorkspace={create(bridge){
   }
   function cancelJobs(){epoch++;for(const job of jobs.values())job.controller.abort();jobs.clear();partial?.abort();partial=null;finishConsent(false);}
   function setDocument(texts,provided,keepUndo=false){
+    activeEditor=null;
     cancelJobs();practicePlayer.stop();if(sourceDialog.open)sourceDialog.close();if(splitDialog.open)splitDialog.close();
     clearSource();$('split-options').replaceChildren();
     const reusable=records.slice();records=provided||texts.map(text=>{const at=reusable.findIndex(r=>r.text===text);return at>=0?reusable.splice(at,1)[0]:D.fresh(text);});
     const ids=new Set(records.map(r=>r.id));translationCache=new Map([...translationCache].filter(([id])=>ids.has(id)));
+    for(const id of editDrafts.keys())if(!ids.has(id))editDrafts.delete(id);
     if(!keepUndo)undo=null;undoButton.hidden=!undo;practiceIndex=Math.min(practiceIndex,Math.max(0,records.length-1));practiceSentence=-1;
     [...$('paragraphs').querySelectorAll('.paragraph')].forEach((card,index)=>decorateCard(card,index));
     disclosure.hidden=!bridge.get().photo;renderPractice();$('player-bar').hidden=view==='guide'||!records.length;
   }
   function clearSource(){sourceIndex=-1;target=null;selection=null;viewport=null;drag=null;$('source-canvas').width=1;$('source-canvas').height=1;$('source-original').value='';$('rescan-text').value='';$('source-lines').replaceChildren();$('source-target').textContent='바꿀 글자를 먼저 선택해주세요.';$('rescan-status').textContent='';$('rescan-preview').hidden=true;}
-  function reset(){cancelJobs();records=[];undo=null;translationCache.clear();practiceIndex=0;practiceSentence=-1;undoButton.hidden=true;
+  function reset(){cancelJobs();records=[];undo=null;translationCache.clear();editDrafts.clear();activeEditor=null;practiceIndex=0;practiceSentence=-1;undoButton.hidden=true;
     if(sourceDialog.open)sourceDialog.close();if(splitDialog.open)splitDialog.close();clearSource();$('split-options').replaceChildren();practice.classList.remove('hide-original');$('practice-hide').setAttribute('aria-pressed','false');$('practice-hide').textContent='원문 가리기';$('practice-repeat').checked=true;$('practice-gap').value='2000';renderPractice();practicePlayer.stop();}
   function mutate(next,notes){undo={records,notes:bridge.get().annotations.map(n=>({...n}))};bridge.commit(next,notes,true);}
   function decorateCard(card,index){
+    if(records[index].edited)card.querySelector('.paragraph-label').append(node('span','수정됨','edited-badge'));
     const actions=node('div',undefined,'paragraph-actions');
     const source=button('원본 확인',()=>openSource(index),'text-button');source.hidden=!bridge.get().photo?.reference;actions.append(source);
     if(bridge.get().language==='ja') {
@@ -76,7 +81,31 @@ window.StudyWorkspace={create(bridge){
     }
     const more=node('details',undefined,'paragraph-more'),summary=node('summary','⋯');summary.setAttribute('aria-label',(index+1)+'번 단락 정리');more.append(summary);
     const combine=button('아래 단락과 합치기',()=>{const next=records.slice();next.splice(index,2,D.merge(records[index],records[index+1],bridge.get().language));const notes=bridge.get().annotations.map(n=>({...n,before:n.before>index?n.before-1:n.before}));mutate(next,notes);});combine.disabled=index===records.length-1;
-    const split=button('문장 경계에서 나누기',()=>openSplit(index));split.disabled=StudyCore.sentenceRanges(records[index].text,bridge.get().language).length<2;more.append(combine,split);actions.append(more);card.append(actions);
+    const edit=button('글 수정',()=>{more.open=false;openInlineEditor(card,index);});
+    const split=button('문장 경계에서 나누기',()=>openSplit(index));split.disabled=StudyCore.sentenceRanges(records[index].text,bridge.get().language).length<2;more.append(edit,combine,split);actions.append(more);card.append(actions);
+  }
+  function openInlineEditor(card,index){
+    if(activeEditor?.card===card)return;
+    activeEditor?.close(false);stop();
+    const record=records[index],token=epoch,body=card.querySelector('.paragraph-text'),actions=card.querySelector('.paragraph-actions'),translation=card.querySelector('.translation-panel');
+    const translationWasHidden=translation?.hidden;
+    const editor=node('div',undefined,'inline-editor'),label=node('label','이 단락의 글 수정'),input=node('textarea'),tools=node('div',undefined,'inline-edit-tools'),status=node('p','','inline-edit-status');
+    input.id='paragraph-edit-'+record.id;input.value=editDrafts.get(record.id)??record.text;input.lang=bridge.get().language;input.maxLength=30000;input.spellcheck=false;label.htmlFor=input.id;status.setAttribute('role','status');
+    const current=()=>epoch===token&&records[index]===record&&card.isConnected;
+    const close=discard=>{if(discard)editDrafts.delete(record.id);else editDrafts.set(record.id,input.value);editor.remove();body.hidden=false;actions.hidden=false;if(translation)translation.hidden=translationWasHidden;card.querySelectorAll('.paragraph-controls button').forEach(b=>b.disabled=!window.speechSynthesis);activeEditor=null;};
+    const resize=()=>{input.style.height='auto';input.style.height=Math.max(120,input.scrollHeight+2)+'px';};
+    input.addEventListener('input',()=>{editDrafts.set(record.id,input.value);resize();status.textContent='';});
+    const image=sourceCanvas();
+    if(image){const preview=node('div',undefined,'inline-source');preview.hidden=true;const canvas=node('canvas');canvas.setAttribute('aria-label','수정 중인 단락의 원본 사진');preview.append(canvas);editor.append(preview);
+      const show=button('원본 보기',()=>{preview.hidden=!preview.hidden;show.textContent=preview.hidden?'원본 보기':'원본 접기';show.setAttribute('aria-expanded',String(!preview.hidden));if(!preview.hidden){const rect=D.bounds(record.regions,image.width,image.height),scale=Math.min(1,1200/rect.w,1600/rect.h);canvas.width=Math.max(1,Math.round(rect.w*scale));canvas.height=Math.max(1,Math.round(rect.h*scale));canvas.getContext('2d').drawImage(image,rect.x,rect.y,rect.w,rect.h,0,0,canvas.width,canvas.height);if(!record.regions.length&&!preview.querySelector('p'))preview.append(node('p','정확한 단락 위치를 찾지 못해 전체 사진을 보여드려요.','workspace-hint'));}},'text-button');show.setAttribute('aria-expanded','false');editor.append(show);
+    }
+    const save=button('저장',()=>{if(!current())return;try{const updated=D.edit(record,input.value);if(updated===record){close(true);return;}if(records.reduce((n,r)=>n+r.text.length,0)-record.text.length+updated.text.length>30000)throw new Error('전체 본문은 30,000자까지 사용할 수 있어요.');const next=records.slice();next[index]=updated;editDrafts.delete(record.id);mutate(next,bridge.get().annotations);bridge.toast('이 단락을 수정했어요. 직전 변경은 되돌릴 수 있어요.');const target=$('paragraphs').querySelectorAll('.paragraph')[index];target?.querySelector('.paragraph-more summary')?.focus({preventScroll:true});}catch(error){status.textContent=error.message;}},'primary');
+    const cancel=button('취소',()=>{close(true);card.querySelector('.paragraph-more summary').focus({preventScroll:true});});
+    const back=button('한 단계 되돌리기',()=>undoButton.click(),'text-button');back.disabled=!undo;
+    tools.append(save,cancel,back);editor.append(label,input,status,tools,node('p','현재 화면에만 반영해요. 새로고침하면 사라집니다.','inline-edit-hint'));
+    body.hidden=true;actions.hidden=true;if(translation)translation.hidden=true;
+    card.querySelectorAll('.paragraph-controls button').forEach(b=>b.disabled=true);body.after(editor);activeEditor={card,close};resize();input.focus({preventScroll:true});
+    input.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();cancel.click();}if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();save.click();}});
   }
   async function translate(index,toggle,panel){
     const record=records[index];if(!record)return;

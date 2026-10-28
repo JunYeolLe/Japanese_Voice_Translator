@@ -12,6 +12,17 @@
   let cropState = null, cropDrag = null, cropResume = false;
   let workspace = null;
   let sourceMode = 'photo', editorPurpose = 'edit', pasteDraft = '', beforeSentenceSplit = null;
+  const selectedVoices = {};
+  let voicePreview = null;
+  const voiceSettings=document.createElement('div');voiceSettings.className='voice-settings';
+  voiceSettings.innerHTML='<label for="voice-select">읽어주는 목소리</label><select id="voice-select" aria-describedby="voice-note"><option value="">자동 선택</option></select><button id="voice-preview" class="secondary" type="button">짧게 들어보기</button><p id="voice-note">기기·브라우저에 따라 목소리가 달라요. 일부 음성은 인터넷 연결이 필요해요.</p>';
+  document.querySelector('.settings-panel').append(voiceSettings);
+  const settingsClose=document.createElement('button');settingsClose.type='button';settingsClose.className='text-button settings-close';settingsClose.textContent='닫기';settingsClose.setAttribute('aria-label','읽기 설정 닫기');settingsClose.onclick=()=>{$('reading-settings').open=false;};document.querySelector('.settings-panel').prepend(settingsClose);
+  document.addEventListener('click',event=>{if(!$('reading-settings').contains(event.target))$('reading-settings').open=false;});
+  document.addEventListener('keydown',event=>{if(event.key==='Escape')$('reading-settings').open=false;});
+  const qualityPanel=document.createElement('div');qualityPanel.id='photo-quality';qualityPanel.className='photo-quality';qualityPanel.hidden=true;
+  qualityPanel.innerHTML='<p id="quality-summary" role="status"></p><details id="quality-details"><summary>사진 상태 자세히</summary><ul id="quality-reasons"></ul><p>기기 안에서 밝기·선명도·기울기를 추정해요. 글 잘림과 인식 정확도를 보장하지 않으며, 작은 후리가나는 지우지 않아요.</p></details><button id="quality-continue" type="button" class="secondary" hidden>이 사진 그대로 읽기</button>';
+  $('photo-preview').after(qualityPanel);
   const language = () => document.querySelector('input[name="language"]:checked').value;
   const layout = () => language() === 'ja' ? $('layout').value : 'horizontal';
   const scrollTo = element => element.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' });
@@ -27,9 +38,14 @@
   }
   function voiceFor(lang) {
     const voices = synth ? synth.getVoices().filter(voice => voice.lang.toLowerCase().split(/[-_]/)[0] === lang) : [];
-    return voices.find(voice => voice.default) || voices.find(voice => voice.localService) || voices[0] || null;
+    return voices.find(voice => voice.voiceURI === selectedVoices[lang]) || voices.find(voice => voice.default) || voices.find(voice => voice.localService) || voices[0] || null;
   }
   function updateVoiceWarning() {
+    const select=$('voice-select'),voices=synth?synth.getVoices().filter(v=>v.lang.toLowerCase().split(/[-_]/)[0]===language()):[];
+    select.replaceChildren(new Option('자동 선택',''));
+    for(const voice of voices)select.add(new Option(voice.name+' · '+voice.lang,voice.voiceURI));
+    select.value=voices.some(v=>v.voiceURI===selectedVoices[language()])?selectedVoices[language()]:'';
+    select.disabled=!voices.length;$('voice-preview').disabled=!synth;
     const warning = !synth ? '이 브라우저에서는 음성 읽기를 사용할 수 없어요. Chrome·Edge·Safari에서 열어주세요.'
       : !voiceFor(language()) ? '이 기기에서 '+LANGUAGES[language()].name+' 목소리를 찾지 못했어요. 소리가 나지 않으면 기기 설정에서 해당 언어 음성을 설치해주세요.' : '';
     $('voice-warning').textContent = warning; $('voice-warning').hidden = !warning;
@@ -194,6 +210,7 @@
     if ($('copy-dialog').open) $('copy-dialog').close(); $('crop-canvas').width = 1; $('crop-canvas').height = 1;
     if (photo) URL.revokeObjectURL(photo.previewURL);
     photo = null;
+    qualityPanel.hidden=true;$('quality-continue').hidden=true;$('quality-details').open=false;$('quality-reasons').replaceChildren();$('quality-summary').textContent='';
     $('image-preview').removeAttribute('src'); $('photo-preview').hidden = true;
     $('image-input').value = ''; $('camera-input').value = '';
     $('rate').value = '1'; updateRateDisplay(); $('toast').hidden = true; clearTimeout(toastTimer);
@@ -286,7 +303,7 @@
     const pasted=editorPurpose==='paste';
     if(pasted){
       pasteDraft=text;clearResult();
-      if(photo?.previewURL)URL.revokeObjectURL(photo.previewURL);photo=null;
+      if(photo?.previewURL)URL.revokeObjectURL(photo.previewURL);photo=null;qualityPanel.hidden=true;$('quality-continue').hidden=true;
       $('image-preview').removeAttribute('src');$('photo-preview').hidden=true;
       $('image-input').value='';$('camera-input').value='';
       showParagraphs(edited,[],edited.map(StudyDocument.fresh));
@@ -313,7 +330,8 @@
       source.width = Math.max(1,Math.round(img.width*sourceScale)); source.height = Math.max(1,Math.round(img.height*sourceScale));
       const ctx = source.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0,0,source.width,source.height); ctx.drawImage(img,0,0,source.width,source.height);
       photo = { fullSource: source, file, turns: 0, crop: {x:0,y:0,w:1,h:1}, previewURL: null, canvas: null };
-      $('ocr-progress').hidden = true; openCrop();
+      $('ocr-progress').hidden = true;
+      await preparePhoto(source,token,photo.crop);
     } catch {
       if (token !== revision) return;
       $('ocr-progress').hidden = true; error('사진을 열지 못했어요. 다른 JPG·PNG 사진을 선택해주세요.');
@@ -332,6 +350,23 @@
     photo = { ...photo, canvas, previewURL: URL.createObjectURL(blob), ...original };
     $('image-preview').src = photo.previewURL; $('photo-preview').hidden = false;
     return true;
+  }
+  async function preparePhoto(source,token,rect){
+    const size=rasterSize(source.width,source.height),canvas=document.createElement('canvas');canvas.width=size.width;canvas.height=size.height;
+    const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.imageSmoothingQuality='high';ctx.drawImage(source,size.padding,size.padding,size.contentWidth,size.contentHeight);
+    if(!await setPhoto(canvas,token,{source,padding:size.padding,scale:size.contentWidth/source.width,crop:rect,reference:null}))return;
+    let result;try{result=PhotoQuality.inspect(source);}catch{result={level:'check',label:'확인이 필요함',issues:['사진 상태를 자동으로 확인하지 못했어요. 사진을 보고 인식을 진행해주세요.']};}
+    if(token!==revision)return;photo.quality=result;photo.awaitingQuality=result.level!=='good';
+    qualityPanel.hidden=false;qualityPanel.dataset.level=result.level;
+    $('quality-summary').textContent=result.label+' · '+(result.issues[0]||'밝기와 선명도가 양호해 보여요.');
+    $('quality-summary').title=result.issues.join(' ');$('quality-reasons').replaceChildren();
+    for(const message of result.issues){const li=document.createElement('li');li.textContent=message;$('quality-reasons').append(li);}
+    $('quality-continue').hidden=!photo.awaitingQuality;
+    $('photo-title').textContent='사진을 준비했어요';$('photo-caption').textContent=photo.awaitingQuality?'확인 후 그대로 읽거나 자르기·회전을 해주세요.':'본문을 인식하고 있어요.';
+    // Let the compact advisory paint before starting the OCR worker.
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    if(token!==revision)return;
+    if(!photo.awaitingQuality)await recognize(token);
   }
   function drawCrop() {
     if (!cropState || !photo?.fullSource) return;
@@ -384,12 +419,7 @@
     try { source = await sourceFromCrop(photo,rect); }
     catch (failure) { if (token === revision) { toast(failure.message || '사진을 준비하지 못했어요.'); openCrop(); } return; }
     if (token !== revision) return;
-    const width=source.width,height=source.height;
-    const size = rasterSize(width,height),canvas = document.createElement('canvas'); canvas.width = size.width; canvas.height = size.height;
-    const ctx = canvas.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.imageSmoothingQuality = 'high'; ctx.drawImage(source,size.padding,size.padding,size.contentWidth,size.contentHeight);
-    if (!await setPhoto(canvas,token,{source,padding:size.padding,scale:size.contentWidth/width,crop:rect})) return;
-    $('photo-title').textContent = '선택한 본문을 읽고 있어요'; $('photo-caption').textContent = '문항 표시와 인쇄된 후리가나도 확인할게요.';
-    await recognize(token);
+    await preparePhoto(source,token,rect);
   }
   function cropPoint(event) {
     const rect = $('crop-canvas').getBoundingClientRect();
@@ -495,16 +525,16 @@
         if (!worker || !current()) return null;
         await worker.setParameters({ tessedit_pageseg_mode: lang === 'ja' ? Tesseract.PSM.AUTO : Tesseract.PSM.SINGLE_BLOCK, user_defined_dpi: '300', textord_tabfind_vertical_text: plan.verticalText, preserve_interword_spaces: '0' });
         if (!current()) return null;
-        let result = await worker.recognize(input, { rotateAuto: true }, { text: true, blocks: true });
+        let result = await StudyOCRInput.recognize(task,worker,input, { rotateAuto: true }, { text: true, blocks: true });
         if (!current()) return null;
         if (!result.data.text.trim()) {
           await worker.setParameters({ tessedit_pageseg_mode: direction === 'vertical' ? Tesseract.PSM.SINGLE_BLOCK_VERT_TEXT : Tesseract.PSM.SINGLE_BLOCK });
           if (!current()) return null;
-          result = await worker.recognize(input, { rotateAuto: true }, { text: true, blocks: true });
+          result = await StudyOCRInput.recognize(task,worker,input, { rotateAuto: true }, { text: true, blocks: true });
           if (!current()) return null;
         }
         // Deskew small camera tilts; avoid accepting a large, possibly wrong automatic rotation.
-        if (Math.abs(result.data.rotateRadians || 0) > Math.PI/18) result = await worker.recognize(input, {}, { text: true, blocks: true });
+        if (Math.abs(result.data.rotateRadians || 0) > Math.PI/18) result = await StudyOCRInput.recognize(task,worker,input, {}, { text: true, blocks: true });
         if (!current()) return null;
         let rescanSource = original;
         let ruleRegions = rules.regions;
@@ -512,7 +542,7 @@
         if (lang === 'ja' && Math.abs(angle) >= .005 && Math.abs(angle) <= Math.PI/18) {
           task.refining = true; $('ocr-status').textContent = '사진 기울기를 맞추고 작은 읽는 법을 확인해요…';
           // Get Tesseract's exact rotated raster so all later geometry uses its coordinates.
-          const raster = await worker.recognize(reference,{rotateRadians:angle},{text:false,imageColor:true});
+          const raster = await StudyOCRInput.recognize(task,worker,reference,{rotateRadians:angle},{text:false,imageColor:true});
           if (!current()) return null;
           const image = new Image(); image.src = raster.data.imageColor; await image.decode();
           if (!current()) return null;
@@ -531,7 +561,7 @@
             const before = result.data;
             $('ocr-status').textContent = '작은 읽는 법을 제외하고 본문을 다시 읽어요…';
             task.rereading = true;
-            const reread = await worker.recognize(input,{}, {text:true,blocks:true});
+            const reread = await StudyOCRInput.recognize(task,worker,input,{}, {text:true,blocks:true});
             task.rereading = false;
             reread.data=OCRClean.suppressRegions(reread.data,ruleRegions);
             if (!current()) return null;
@@ -564,7 +594,7 @@
                 const ctx = crop.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0,0,crop.width,crop.height);
                 ctx.imageSmoothingQuality = 'high'; ctx.drawImage(rescanSource.source,left,top,right-left,bottom-top,10,10,crop.width-20,crop.height-20);
                 let rescanned;
-                try { rescanned = await worker.recognize(crop, {}, { text: true, blocks: true }); }
+                try { rescanned = await StudyOCRInput.recognize(task,worker,crop, {}, { text: true, blocks: true }); }
                 catch { if (!current()) return null; break; } // A failed optional rescan must not discard readable text.
                 if (!current()) return null;
                 const candidate = { text: rescanned.data.text, confidence: rescanned.data.confidence, words: (rescanned.data.blocks || []).flatMap(block => (block.paragraphs || []).flatMap(paragraph => (paragraph.lines || []).flatMap(row => row.words || []))) };
@@ -608,9 +638,9 @@
         const ctx = canvas.getContext('2d'); ctx.translate(canvas.width/2, canvas.height/2); ctx.rotate(Math.PI/2); ctx.drawImage(image, -image.width/2, -image.height/2);
         return canvas;
       };
-      const source = original.source ? { source: rotate(original.source), padding: original.padding, scale: original.scale, fullSource: rotate(original.fullSource), turns: ((original.turns || 0)+1)%4, crop: {x:1-original.crop.y-original.crop.h,y:original.crop.x,w:original.crop.h,h:original.crop.w} } : {};
-      if (!await setPhoto(rotate(original.canvas), token, source)) return;
-      await recognize(token);
+      photo={...original,fullSource:rotate(original.fullSource),turns:((original.turns||0)+1)%4,crop:{x:Math.max(0,1-original.crop.y-original.crop.h),y:original.crop.x,w:original.crop.h,h:original.crop.w}};
+      const source=await sourceFromCrop(photo,photo.crop);if(token!==revision)return;
+      await preparePhoto(source,token,photo.crop);
     } catch { if (token === revision) error('사진을 회전하지 못했어요. 다시 선택해주세요.'); }
   }
 
@@ -631,11 +661,11 @@
       initializationGate=creation.then(()=>{},()=>{});const worker=await creation;check();
       const vertical=direction==='vertical'||(lang==='ja'&&box.h>box.w*2);
       await worker.setParameters({tessedit_pageseg_mode:vertical?Tesseract.PSM.SINGLE_BLOCK_VERT_TEXT:Tesseract.PSM.SINGLE_BLOCK,textord_tabfind_vertical_text:vertical?'1':'0',user_defined_dpi:'300'});check();
-      let result=await worker.recognize(canvas,{}, {text:true,blocks:true});check();
+      let result=await StudyOCRInput.recognize(task,worker,canvas,{}, {text:true,blocks:true});check();
       result.data=OCRClean.suppressRegions(result.data,rules.regions);
       if(lang==='ja'){
         const print=await cleanPage(task,canvas,'layout',result.data,vertical?'vertical':'horizontal');check();
-        if(print.regions.length){result=await worker.recognize(canvas,{}, {text:true,blocks:true});check();result.data=OCRClean.suppressRegions(result.data,rules.regions);}
+        if(print.regions.length){result=await StudyOCRInput.recognize(task,worker,canvas,{}, {text:true,blocks:true});check();result.data=OCRClean.suppressRegions(result.data,rules.regions);}
         result.data=OCRClean.restoreVerticalPunctuation(result.data,print.punctuation);
       }
       const extracted=documentFromOCR(result.data,lang,vertical?'vertical':'horizontal').paragraphs.join(lang==='ja'?'':' ').trim();
@@ -664,6 +694,7 @@
     pasteDraft=$('source-text').value;updateTextCount();
   });
   $('retry').addEventListener('click', () => { revision++; recognize(revision); });
+  $('quality-continue').addEventListener('click',()=>{if(!photo?.canvas)return;photo.awaitingQuality=false;$('quality-continue').hidden=true;revision++;recognize(revision);});
   $('rotate').addEventListener('click', rotatePhoto);
   $('crop-photo').addEventListener('click',openCrop);
   $('crop-use').addEventListener('click',()=>useCrop(false)); $('crop-full').addEventListener('click',()=>useCrop(true));
@@ -683,13 +714,21 @@
     error('인식을 취소했어요. 사진을 다시 읽거나 직접 입력할 수 있어요.');
   });
   document.querySelectorAll('input[name="language"]').forEach(input => input.addEventListener('change', () => {
-    renderIntake();
+    renderIntake();updateVoiceWarning();
     revision++; cancelOCR(); player.stop();
-    if (sourceMode==='photo'&&photo?.canvas) recognize(revision);
+    if (sourceMode==='photo'&&photo?.canvas&&!photo.awaitingQuality) recognize(revision);
     else if (!$('text-editor').hidden) updateVoiceWarning();
     else if (paragraphs.length) showParagraphs(paragraphs,annotations);
   }));
-  $('layout').addEventListener('change', () => { revision++; cancelOCR(); player.stop(); if (photo?.canvas) recognize(revision); });
+  $('layout').addEventListener('change', () => { revision++; cancelOCR(); player.stop(); if (photo?.canvas&&!photo.awaitingQuality) recognize(revision); });
+  $('voice-select').addEventListener('change',()=>{selectedVoices[language()]=$('voice-select').value;workspace.stop();toast('목소리를 바꿨어요. 다음 재생부터 적용해요.');});
+  $('voice-preview').addEventListener('click',()=>{
+    if(!synth)return;if(voicePreview){workspace.stop();voicePreview=null;$('voice-preview').textContent='짧게 들어보기';return;}workspace.stop();
+    const utterance=new SpeechSynthesisUtterance({ja:'こんにちは。この声で、ゆっくり読んでみましょう。',ko:'안녕하세요. 이 목소리로 천천히 들어보세요.',en:'Hello. Let’s listen and practice at your own pace.'}[language()]);
+    utterance.lang=LANGUAGES[language()].locale;utterance.voice=voiceFor(language());utterance.rate=Number($('rate').value);voicePreview=utterance;
+    $('voice-preview').textContent='미리듣기 정지';const finished=()=>{if(voicePreview===utterance){voicePreview=null;$('voice-preview').textContent='짧게 들어보기';}};
+    utterance.onend=finished;utterance.onerror=event=>{if(!['canceled','interrupted'].includes(event.error))toast('미리듣기를 재생하지 못했어요. 다른 목소리를 선택해주세요.');finished();};synth.speak(utterance);
+  });
   $('play-all').addEventListener('click', () => {
     if (workspace?.playControl()) return;
     const state = player.getState();
@@ -707,7 +746,7 @@
   if (synth) synth.addEventListener('voiceschanged', updateVoiceWarning);
   workspace=StudyWorkspace.create({
     get:()=>({paragraphs,annotations,photo,language:language()}),voiceFor,stop:()=>player.stop(),toast,rescan:rescanRegion,
-    commit:(records,notes,keepUndo)=>{const restore=showFurigana;revision++;cancelOCR();showParagraphs(records.map(r=>r.text),notes,records,keepUndo);if(!photo)pasteDraft=paragraphs.join('\n\n');if(restore&&language()==='ja')toggleFurigana();}
+    commit:(records,notes,keepUndo)=>{const restore=showFurigana,overrides=new Map(workspace.records().map((r,i)=>[r.id,readingOverrides[i]]));revision++;cancelOCR();showParagraphs(records.map(r=>r.text),notes,records,keepUndo);readingOverrides=records.map(r=>overrides.get(r.id));if(!photo)pasteDraft=paragraphs.join('\n\n');if(restore&&language()==='ja')toggleFurigana();}
   });
   renderIntake();updateRateDisplay(); updateVoiceWarning(); renderPlayback(player.getState());
 })();

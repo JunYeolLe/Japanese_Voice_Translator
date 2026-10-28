@@ -1,0 +1,13 @@
+const test=require('node:test'),assert=require('node:assert/strict');
+const Q=require('../sorinote/photo-quality'),D=require('../sorinote/study');
+function raster(width=700,height=800,background=250){const data=new Uint8ClampedArray(width*height*4);for(let i=0;i<data.length;i+=4){data[i]=data[i+1]=data[i+2]=background;data[i+3]=255;}return {width,height,data};}
+function box(image,x,y,w,h,value=30){for(let yy=y;yy<y+h;yy++)for(let xx=x;xx<x+w;xx++){const i=(yy*image.width+xx)*4;image.data[i]=image.data[i+1]=image.data[i+2]=value;}}
+function textPage(){const image=raster();for(let y=50;y<700;y+=45)for(let x=40;x<640;x+=25){box(image,x,y,3,20);box(image,x,y,16,3);box(image,x,y+10,16,3);}return image;}
+test('선명한 지면은 자동 진행하고 사진 픽셀은 변경하지 않는다',()=>{const image=textPage(),before=Buffer.from(image.data);assert.equal(Q.assess(image).level,'good');assert.deepEqual(Buffer.from(image.data),before);});
+test('어둡거나 저해상도인 사진에는 재촬영을 권한다',()=>{assert.equal(Q.assess(raster(200,180,60)).level,'retake');assert.ok(Q.assess(raster(200,180,60)).issues.some(s=>s.includes('해상도')));});
+test('인쇄 후리가나처럼 작은 획이 있어도 삭제하거나 흐림으로 단정하지 않는다',()=>{const image=textPage();for(let x=45;x<630;x+=10)box(image,x,35,2,5);assert.equal(Q.assess(image).level,'good');});
+test('여백이 넓은 선명한 교재를 저대비로 오판하지 않는다',()=>{const image=raster();for(let x=40;x<600;x+=25){box(image,x,100,4,24);box(image,x,100,18,4);box(image,x,112,18,4);}assert.equal(Q.assess(image).level,'good');});
+test('가장자리에 닿는 글자는 잘림 가능성을 안내한다',()=>{const image=textPage();box(image,0,100,8,200);assert.ok(Q.assess(image).issues.some(s=>s.includes('가장자리')));});
+test('단락 수정은 다른 영역과 원본을 보존하고 새 번역 식별자를 만든다',()=>{const r=D.fresh('今日は学校です。明日は休みです。');r.regions=[{start:0,end:8,box:{x0:10,y0:10,x1:200,y1:30}},{start:8,end:r.text.length,box:{x0:10,y0:40,x1:200,y1:60}}];r.uncertain=[{start:8,end:10,box:r.regions[1].box}];const original=JSON.stringify(r);const next=D.edit(r,'今日は図書館です。明日は休みです。');assert.notEqual(next.id,r.id);assert.equal(next.edited,true);assert.equal(next.uncertain[0].start,9);assert.deepEqual(next.regions[1].box,r.regions[1].box);assert.equal(JSON.stringify(r),original);});
+test('빈 단락은 저장하지 않으며 변경 없는 저장은 같은 번역 키를 유지한다',()=>{const r=D.fresh('本文。');assert.throws(()=>D.edit(r,'  '));assert.equal(D.edit(r,'本文。'),r);});
+test('글자 삽입·삭제 후 영역 범위가 유효하며 수정됨 표시를 합치기·나누기에 유지한다',()=>{const r=D.fresh('学校です。');r.regions=[{start:0,end:5,box:{x0:0,y0:0,x1:100,y1:20}}];for(const text of ['今日は学校です。','学校。','学校です。明日も。','別の文章です。']){const next=D.edit(r,text);assert.ok(next.regions.every(b=>b.start>=0&&b.end<=text.length&&b.end>b.start));assert.equal(D.slice(next,0,text.length).edited,true);assert.equal(D.merge(next,D.fresh('追加。')).edited,true);}});
