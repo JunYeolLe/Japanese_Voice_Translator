@@ -2,6 +2,18 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const V=require('../sorinote/vocabulary');
 const flush=()=>new Promise(r=>setImmediate(r));
 const deferred=()=>{let resolve;return {promise:new Promise(r=>resolve=r),resolve:value=>resolve(value)};};
+test('처음 24개만 표시해도 전체 복사는 나머지 뜻까지 준비하고 더 보기는 모두 펼친다',async()=>{
+ const words=Array.from({length:30},(_,i)=>'単語'+i),text=words.join(' ');let requests=0;
+ const h=harness({tokenize:async()=>[words.map(surface_form=>({surface_form,reading:'タンゴ',pos:'名詞'}))],translate:async()=>{requests++;return {text:'뜻',provider:'테스트'};}});
+ h.app.setDocument([{id:1,text}],[1]);await flush();h.el('study-summary').open=true;h.el('study-summary').fire('toggle');await flush();
+ assert.equal(requests,24);assert.doesNotMatch(h.el('study-entries').textContent,/単語29/);assert.equal(h.el('study-more').hidden,false);
+ await h.el('study-copy').onclick();assert.equal(requests,30);assert.match(h.calls.copied,/単語29 : たんご \( 뜻 \)/);
+ h.el('study-more').onclick();await flush();assert.match(h.el('study-entries').textContent,/単語29/);assert.equal(h.el('study-more').hidden,true);assert.equal(requests,30);
+});
+test('전체 복사 중 뜻 조회가 실패하면 일부만 전체인 것처럼 복사하지 않는다',async()=>{
+ const h=harness({translate:async()=>{throw new Error('무료 한도 초과');}});h.app.setDocument([{id:1,text:'未知語'}],[1]);await flush();h.el('study-summary').open=true;
+ await h.el('study-copy').onclick();assert.equal(h.calls.copied,'');assert.match(h.el('study-status').textContent,/한도/);
+});
 // Minimal DOM harness for async lifecycle checks; layout is tested in the browser.
 function harness(options={}){
  const elements=new Map();
