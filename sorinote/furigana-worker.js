@@ -13,7 +13,7 @@ self.onmessage=async event=>{
     if(progress)self.postMessage({id,status:'dictionary'});
     const analyzer=await tokenizer();
     if(progress)self.postMessage({id,status:'readings'});
-    const tokens=paragraphs.map(text=>analyzer.tokenize(text).map(token=>({surface_form:token.surface_form,reading:token.reading||''})));
+    const tokens=paragraphs.map(text=>analyzer.tokenize(text).map(token=>({surface_form:token.surface_form,reading:token.reading||'',basic_form:token.basic_form||'',pos:token.pos||'',pos_detail_1:token.pos_detail_1||''})));
     self.postMessage({id,tokens});
   }catch{self.postMessage({id,error:'후리가나 사전을 준비하지 못했어요. 연결을 확인하고 다시 켜주세요.'});}
 };

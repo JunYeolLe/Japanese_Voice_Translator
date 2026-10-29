@@ -107,18 +107,33 @@
     const body = $('paragraphs').querySelectorAll('.paragraph-text')[index]; if (!body) return;
     const text = paragraphs[index]; body.replaceChildren();
     const parts = showFurigana && furiganaTokens ? rubySegments(text,furiganaTokens[index],readingOverrides[index]) : [{base:text,reading:'',start:0,end:text.length}];
+    const words=workspace?.words(index)||[];
+    const groups=words.length?words:[{start:0,end:text.length,selectable:false}];
+    let wordCursor=0,partCursor=0;
     for (const sentence of sentenceRanges(text,language())) {
       const span = document.createElement('span'); span.className = 'sentence'; span.dataset.start = sentence.start; span.dataset.end = sentence.end;
-      for (const part of parts) {
-        const start = Math.max(sentence.start,part.start), end = Math.min(sentence.end,part.end); if (end <= start) continue;
+      while(wordCursor<groups.length&&groups[wordCursor].end<=sentence.start)wordCursor++;
+      for(let wi=wordCursor;wi<groups.length&&groups[wi].start<sentence.end;wi++){
+        const word=groups[wi];
+        const from=Math.max(sentence.start,word.start),to=Math.min(sentence.end,word.end);if(to<=from)continue;
+        const wrapper=document.createElement('span');wrapper.dataset.start=from;wrapper.dataset.end=to;
+        if(word.selectable){wrapper.className='lookup-word';wrapper.tabIndex=0;wrapper.setAttribute('role','button');wrapper.setAttribute('aria-label',word.surface+' 단어 뜻 보기');
+          const lookup=()=>workspace.openWord(index,word);wrapper.addEventListener('click',event=>{event.stopPropagation();lookup();});wrapper.addEventListener('keydown',event=>{if(event.target===wrapper&&(event.key==='Enter'||event.key===' ')){event.preventDefault();event.stopPropagation();lookup();}});
+        }
+      while(partCursor<parts.length&&parts[partCursor].end<=from)partCursor++;
+      for (let pi=partCursor;pi<parts.length&&parts[pi].start<to;pi++) {
+        const part=parts[pi];
+        const start = Math.max(from,part.start), end = Math.min(to,part.end); if (end <= start) continue;
         const base = text.slice(start,end);
-        if (!part.reading || start !== part.start || end !== part.end) { span.append(document.createTextNode(base)); continue; }
+        if (!part.reading || start !== part.start || end !== part.end) { wrapper.append(document.createTextNode(base)); continue; }
         const ruby = document.createElement('ruby'), rt = document.createElement('rt');
         ruby.append(document.createTextNode(base)); rt.textContent = part.reading; rt.setAttribute('aria-hidden','true'); ruby.append(rt);
-        ruby.tabIndex = 0; ruby.setAttribute('role','button'); ruby.setAttribute('aria-label',base+' 읽는 법 수정, '+part.reading); ruby.title = '후리가나 수정';
+        rt.removeAttribute('aria-hidden');rt.tabIndex = 0; rt.setAttribute('role','button'); rt.setAttribute('aria-label',base+' 읽는 법 수정, '+part.reading); rt.title = '후리가나 수정';
         const edit = () => { player.pause(); readingTarget = {index,start:part.start,base}; $('reading-word').textContent = base; $('reading-value').value = part.reading; $('reading-dialog').showModal(); $('reading-value').focus(); };
-        ruby.addEventListener('click',edit); ruby.addEventListener('keydown',event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); edit(); } });
-        span.append(ruby);
+        rt.addEventListener('click',event=>{event.stopPropagation();edit();}); rt.addEventListener('keydown',event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault();event.stopPropagation(); edit(); } });
+        wrapper.append(ruby);
+      }
+        if(word.selectable)span.append(wrapper);else span.append(...wrapper.childNodes);
       }
       body.append(span);
     }
@@ -147,7 +162,7 @@
   }});
   function requestFurigana(items,onProgress) {
     if (!furiganaWorker) {
-      const worker=new Worker('furigana-worker.js?v=6');furiganaWorker=worker;
+      const worker=new Worker('furigana-worker.js?v=12');furiganaWorker=worker;
       worker.onmessage = event => {
         const pending=furiganaPending.get(event.data.id);if(!pending||pending.worker!==worker)return;
         if(event.data.status){pending.onProgress?.(event.data.status);return;}
@@ -746,6 +761,8 @@
   if (synth) synth.addEventListener('voiceschanged', updateVoiceWarning);
   workspace=StudyWorkspace.create({
     get:()=>({paragraphs,annotations,photo,language:language()}),voiceFor,stop:()=>player.stop(),toast,rescan:rescanRegion,
+    tokenize:requestFurigana,repaint:paintReadings,
+    wordReading:(index,word)=>{if(!furiganaTokens?.[index])return word.reading;return rubySegments(paragraphs[index],furiganaTokens[index],readingOverrides[index]).filter(p=>p.start>=word.start&&p.end<=word.end).map(p=>p.reading||p.base).join('');},
     commit:(records,notes,keepUndo)=>{const restore=showFurigana,overrides=new Map(workspace.records().map((r,i)=>[r.id,readingOverrides[i]]));revision++;cancelOCR();showParagraphs(records.map(r=>r.text),notes,records,keepUndo);readingOverrides=records.map(r=>overrides.get(r.id));if(!photo)pasteDraft=paragraphs.join('\n\n');if(restore&&language()==='ja')toggleFurigana();}
   });
   renderIntake();updateRateDisplay(); updateVoiceWarning(); renderPlayback(player.getState());

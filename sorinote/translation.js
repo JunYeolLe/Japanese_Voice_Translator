@@ -12,7 +12,7 @@
     if(current)output.push(current);return output;
   }
   function create({fetcher=root.fetch?.bind(root),translatorAPI=root.Translator,consent,onStatus=()=>{},decode=text=>text}={}) {
-    let native=null,nativeLoading=null,consented=false;
+    let native=null,nativeLoading=null,consented=false,consentPending=null;
     function check(signal){if(signal?.aborted)throw new DOMException('취소됨','AbortError');}
     async function translate(text,signal,status=onStatus) {
       check(signal);
@@ -30,7 +30,7 @@
           }
         }catch(error){check(signal);/* External fallback still requires explicit consent. */}
       }
-      if(!consented){consented=Boolean(await consent?.(text,signal));check(signal);if(!consented)throw new Error('외부 전송을 취소했어요. 원문은 그대로 남아 있어요.');}
+      if(!consented){if(!consentPending)consentPending=Promise.resolve(consent?.(text,signal)).then(Boolean).finally(()=>consentPending=null);const accepted=await consentPending;check(signal);consented=accepted;if(!consented)throw new Error('외부 전송을 취소했어요. 원문은 그대로 남아 있어요.');}
       const parts=chunks(text),results=[];
       for(let i=0;i<parts.length;i++) {
         check(signal);status('한국어 뜻을 가져오고 있어요 · '+(i+1)+' / '+parts.length);
