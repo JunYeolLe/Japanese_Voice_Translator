@@ -1,5 +1,5 @@
-const CACHE='sorinote-shell-16';
-const FILES=['./','index.html','style.css?v=12','pro.css?v=14','modern.css?v=15','update.css?v=16','update.js?v=16','update-ui.js?v=16','core.js?v=8','reading.js?v=6','ocr-clean.js?v=5','ocr-input.js?v=10','photo-quality.js?v=10','study.js?v=10','translation.js?v=12','vocabulary.js?v=14','word-study.js?v=16','workspace.js?v=16','app.js?v=16','basic-dictionary.js?v=14','pro.js?v=16','dictionary-data.js?v=14','dictionary-license.html','icon.svg','icon-192.png','icon-512.png','manifest.webmanifest'];
+const CACHE='sorinote-shell-17';
+const FILES=['./','index.html','style.css?v=12','pro.css?v=14','modern.css?v=17','update.css?v=16','update.js?v=16','update-ui.js?v=17','core.js?v=17','reading.js?v=6','ocr-clean.js?v=5','ocr-input.js?v=10','photo-quality.js?v=10','study.js?v=10','translation.js?v=12','vocabulary.js?v=14','word-study.js?v=17','workspace.js?v=17','app.js?v=17','basic-dictionary.js?v=14','pro.js?v=17','dictionary-data.js?v=14','dictionary-license.html','icon.svg','icon-192.png','icon-512.png','manifest.webmanifest'];
 const META='sorinote-update-settings',KEY=new URL('./active-shell',self.registration.scope).href;
 const selected=async()=>{const r=await (await caches.open(META)).match(KEY);return r?await r.text():CACHE;};
 const select=async name=>(await caches.open(META)).put(KEY,new Response(name));

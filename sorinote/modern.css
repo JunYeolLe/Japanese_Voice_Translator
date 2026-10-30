@@ -68,6 +68,35 @@ body.landing .footer p{font-size:11px}
  body.landing .source-bottom{margin-top:12px}
 }
 @media(max-height:600px){body.landing .intro p{display:none}body.landing .intro{margin-bottom:10px}}
+/* Reading controls: stable touch targets and breathing room at 320px. */
+.reading-toolbar{gap:10px;align-items:center;margin:20px 0 12px;flex-wrap:wrap}
+.reading-toolbar>button,.reading-toolbar>details>summary{min-height:44px;padding:10px 12px;border-radius:12px;background:#fff;border:1px solid var(--line);font-size:12px}
+#pick-position[aria-pressed=true]{background:var(--accent);color:#fff}
+.picking-position .sentence{display:block;cursor:pointer;border-radius:8px;padding:10px;margin:10px 0;outline:1px dashed #9db7ef;outline-offset:2px;min-height:44px}
+.picking-position .sentence:hover,.picking-position .sentence:focus-visible{background:#e7efff;outline:2px solid var(--accent)}
+.paragraph-actions{gap:12px;margin-top:16px}
+.paragraph-actions>.text-button{padding:10px 12px;border-radius:10px;background:#f5f7fb;font-size:12px}
+.paragraph-more[open]{gap:10px;margin-top:8px}
+.paragraph-more button{padding:12px 16px;min-height:46px;border-radius:10px;margin:0}
+.paragraph-more summary{border-radius:10px;background:#f5f7fb}
+.inline-edit-tools,.source-actions,.crop-actions,.word-actions{gap:12px;flex-wrap:wrap}
+.word-tools>button,.word-tools>select{margin:8px 8px 0 0;min-height:44px}
+#player-bar .player-controls{display:grid;grid-template-columns:minmax(48px,1fr) minmax(110px,2fr) minmax(48px,1fr) auto auto;gap:10px}
+#player-bar .player-controls>button{min-height:48px;margin:0;padding:10px 12px;white-space:nowrap}
+#player-bar .speed{grid-column:1/-1}
+#player-bar .player-status{margin-bottom:8px;min-height:18px}
+#player-bar .player-inner{max-width:760px;padding:12px 18px}
+#player-bar .player-expand{font-size:12px}
+#player-bar .stop-button{width:100%;min-width:44px}
+.has-results{padding-bottom:180px}
+.paragraph-text{overflow-wrap:anywhere}
+@media(max-width:600px){
+ #player-bar .player-controls{grid-template-columns:minmax(48px,1fr) minmax(110px,2fr) minmax(48px,1fr);gap:10px}
+ #player-bar .stop-button{grid-column:1;min-height:44px!important;font-size:12px}
+ #player-bar .player-expand{grid-column:2/4;min-height:44px!important;background:#f5f7fb}
+ .has-results{padding-bottom:220px}
+ .word-actions>button{flex:1 1 120px;min-height:46px}
+}
 @media(max-height:700px){
  body.landing .header{padding-top:8px;padding-bottom:8px}
  body.landing .intro{margin-bottom:12px}

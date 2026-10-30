@@ -306,6 +306,13 @@
       groups = paragraphs.map(text => readingUnits(text, lang));
       if (groups.some(group => !group.length)) return false;
       state = { status: 'playing', paragraph: Math.max(0, Math.min(index, groups.length - 1)), chunk: 0, scope, lang, repeat: scope === 'paragraph' && Boolean(options.repeat), cycle: 1, rangeStart: -1, rangeEnd: -1 };
+      const offset = Math.max(0, Number(options.startOffset) || 0);
+      const group = groups[state.paragraph];
+      state.chunk = Math.max(0, group.findIndex(unit => unit.end > offset));
+      const unit = group[state.chunk];
+      if (offset > unit.start && offset < unit.end) {
+        group[state.chunk] = {...unit, text: unit.text.slice(offset-unit.start), start: offset};
+      }
       speak(generation); return true;
     }
     function pause() {
@@ -330,7 +337,13 @@
     function setRepeat(repeat) { state.repeat = state.scope === 'paragraph' && Boolean(repeat); notify(); }
     return { play, pause, resume, stop, setRepeat, updateRate, getState: () => ({ ...state }) };
   }
-  const api = { LANGUAGES, ocrPlan, rasterSize, cleanText, cleanOCRLine, filterOCRData, splitParagraphs, paragraphsFromOCR, documentFromOCR, uncertainLines, preferLine, sentenceRanges, readingUnits, speechChunks, createPlayback };
+  function sentenceTarget(paragraphs, lang, paragraph, offset, direction) {
+    const sentences = paragraphs.flatMap((text,index) => sentenceRanges(text,lang).filter(s=>s.text.trim()).map(s=>({paragraph:index,start:s.start,end:s.end})));
+    const current = sentences.findIndex(s=>s.paragraph===paragraph && s.start<=offset && s.end>offset);
+    const next = current < 0 ? (direction > 0 ? 0 : -1) : current + direction;
+    return sentences[next] || null;
+  }
+  const api = { LANGUAGES, ocrPlan, rasterSize, cleanText, cleanOCRLine, filterOCRData, splitParagraphs, paragraphsFromOCR, documentFromOCR, uncertainLines, preferLine, sentenceRanges, sentenceTarget, readingUnits, speechChunks, createPlayback };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.StudyCore = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -13,7 +13,7 @@
   let workspace = null;
   let sourceMode = 'photo', editorPurpose = 'edit', pasteDraft = '', beforeSentenceSplit = null;
   const selectedVoices = {};
-  let voicePreview = null;
+  let voicePreview = null, pickingPosition = false, cursor = {paragraph:0,start:0};
   const voiceSettings=document.createElement('div');voiceSettings.className='voice-settings';
   voiceSettings.innerHTML='<label for="voice-select">읽어주는 목소리</label><select id="voice-select" aria-describedby="voice-note"><option value="">자동 선택</option></select><button id="voice-preview" class="secondary" type="button">짧게 들어보기</button><p id="voice-note">기기·브라우저에 따라 목소리가 달라요. 일부 음성은 인터넷 연결이 필요해요.</p>';
   document.querySelector('.settings-panel').append(voiceSettings);
@@ -53,9 +53,11 @@
     document.querySelectorAll('.paragraph-play,.paragraph-repeat').forEach(button => { button.disabled = !synth; });
   }
   function renderPlayback(state) {
-    if (workspace?.view() === 'practice') return;
+
+    if(state.paragraph>=0 && state.rangeStart>=0)cursor={paragraph:state.paragraph,start:state.rangeStart};
+    for(const [id,step] of [['previous-sentence',-1],['next-sentence',1]])$(id).disabled=!synth||!StudyCore.sentenceTarget(paragraphs,language(),cursor.paragraph,cursor.start,step);
     const active = state.status === 'playing' || state.status === 'paused';
-    const allActive = active && state.scope === 'all';
+    const allActive = active;
     $('all-label').textContent = allActive ? (state.status === 'paused' ? '이어서 듣기' : '잠깐 멈춤') : '전체 듣기';
     $('all-symbol').textContent = allActive && state.status === 'playing' ? 'Ⅱ' : '▶';
     $('stop').disabled = !active;
@@ -103,6 +105,10 @@
     input.setAttribute('aria-valuetext',value.toFixed(2)+'배속');
     input.style.setProperty('--speed-fill',((value-Number(input.min))/(Number(input.max)-Number(input.min))*100)+'%');
   }
+  function setPicking(value){pickingPosition=value;$('pick-position').setAttribute('aria-pressed',String(value));$('pick-position').textContent=value?'위치 선택 취소':'시작 위치 선택';document.body.classList.toggle('picking-position',value);paragraphs.forEach((_,i)=>paintParagraph(i));}
+  function listenFrom(index,offset){if(!paragraphs[index]||!synth)return;workspace?.stop();setPicking(false);player.play(paragraphs,index,'all',language(),{startOffset:offset});}
+  $('pick-position').onclick=()=>{setPicking(!pickingPosition);if(pickingPosition)toast('듣기를 시작할 문장을 누르세요. 그 문장부터 끝까지 읽어요.');};
+  for(const [id,step]of [['previous-sentence',-1],['next-sentence',1]])$(id).onclick=()=>{const target=StudyCore.sentenceTarget(paragraphs,language(),cursor.paragraph,cursor.start,step);if(target)listenFrom(target.paragraph,target.start);};
   function paintParagraph(index) {
     const body = $('paragraphs').querySelectorAll('.paragraph-text')[index]; if (!body) return;
     const text = paragraphs[index]; body.replaceChildren();
@@ -112,12 +118,13 @@
     let wordCursor=0,partCursor=0;
     for (const sentence of sentenceRanges(text,language())) {
       const span = document.createElement('span'); span.className = 'sentence'; span.dataset.start = sentence.start; span.dataset.end = sentence.end;
+      if(pickingPosition){span.tabIndex=0;span.setAttribute('role','button');span.setAttribute('aria-label','이 문장부터 듣기: '+sentence.text);span.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();listenFrom(index,sentence.start);},true);span.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();listenFrom(index,sentence.start);}});}
       while(wordCursor<groups.length&&groups[wordCursor].end<=sentence.start)wordCursor++;
       for(let wi=wordCursor;wi<groups.length&&groups[wi].start<sentence.end;wi++){
         const word=groups[wi];
         const from=Math.max(sentence.start,word.start),to=Math.min(sentence.end,word.end);if(to<=from)continue;
         const wrapper=document.createElement('span');wrapper.dataset.start=from;wrapper.dataset.end=to;
-        if(word.selectable){wrapper.className='lookup-word';wrapper.tabIndex=0;wrapper.setAttribute('role','button');wrapper.setAttribute('aria-label',word.surface+' 단어 뜻 보기');
+        if(word.selectable&&!pickingPosition){wrapper.className='lookup-word';wrapper.tabIndex=0;wrapper.setAttribute('role','button');wrapper.setAttribute('aria-label',word.surface+' 단어 뜻 보기');
           const lookup=()=>workspace.openWord(index,word);wrapper.addEventListener('click',event=>{event.stopPropagation();lookup();});wrapper.addEventListener('keydown',event=>{if(event.target===wrapper&&(event.key==='Enter'||event.key===' ')){event.preventDefault();event.stopPropagation();lookup();}});
         }
       while(partCursor<parts.length&&parts[partCursor].end<=from)partCursor++;
@@ -128,6 +135,7 @@
         if (!part.reading || start !== part.start || end !== part.end) { wrapper.append(document.createTextNode(base)); continue; }
         const ruby = document.createElement('ruby'), rt = document.createElement('rt');
         ruby.append(document.createTextNode(base)); rt.textContent = part.reading; rt.setAttribute('aria-hidden','true'); ruby.append(rt);
+        if(pickingPosition){wrapper.append(ruby);continue;}
         rt.removeAttribute('aria-hidden');rt.tabIndex = 0; rt.setAttribute('role','button'); rt.setAttribute('aria-label',base+' 읽는 법 수정, '+part.reading); rt.title = '후리가나 수정';
         const edit = () => { player.pause(); readingTarget = {index,start:part.start,base}; $('reading-word').textContent = base; $('reading-value').value = part.reading; $('reading-dialog').showModal(); $('reading-value').focus(); };
         rt.addEventListener('click',event=>{event.stopPropagation();edit();}); rt.addEventListener('keydown',event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault();event.stopPropagation(); edit(); } });
@@ -150,7 +158,7 @@
     $('furigana-toggle').setAttribute('aria-pressed',String(showFurigana && Boolean(furiganaTokens)));
     $('furigana-toggle').textContent = loading ? '후리가나 준비 중…' : showFurigana ? '후리가나 끄기' : state.status==='error' ? '후리가나 다시 시도' : '후리가나 켜기';
     renderPlayback(player.getState());
-    workspace?.renderPractice();
+
   }
   const furigana=createFuriganaController({load:requestFurigana,onChange:state=>{
     showFurigana=state.visible;furiganaTokens=state.tokens;
@@ -205,6 +213,7 @@
     $('ocr-progress').hidden = true; $('rotate').disabled = false;
   }
   function clearResult() {
+    cursor={paragraph:0,start:0};setPicking(false);
     workspace?.reset();
     player.stop(); paragraphs = []; annotations = []; lastActiveParagraph = -1;
     furigana.reset();readingOverrides=[];
@@ -234,6 +243,7 @@
     if (scroll) window.scrollTo({ top: 0, behavior: 'instant' });
   }
   function showParagraphs(items, notes = [], records = null, keepUndo = false) {
+    cursor={paragraph:0,start:0};setPicking(false);
     player.stop(); paragraphs = items; annotations = notes; lastActiveParagraph = -1;
     furigana.reset();readingOverrides=[];
     $('paragraph-count').textContent = items.length+'개'; $('paragraphs').replaceChildren();
@@ -294,7 +304,7 @@
     $('editor-hint').textContent=purpose==='paste'?'복사한 글을 붙여넣거나 직접 입력하세요. 빈 줄 하나가 단락 하나가 됩니다.':'잘못 읽힌 글자를 고쳐주세요. 빈 줄 하나가 단락 하나가 됩니다.';
     $('apply-text').textContent=purpose==='paste'?'▶ 바로 듣기':'이 글로 듣기 →';
     $('paste-options').hidden=purpose!=='paste';$('split-pasted').textContent='문장별로 나누기';
-    workspace?.stopPractice();
+    workspace?.stop();
     if (ocrTask) { cancelOCR(); $('photo-caption').textContent = '사진 인식을 멈췄어요. 다시 읽거나 직접 입력할 수 있어요.'; error('직접 입력으로 전환했어요. 사진을 다시 읽으려면 아래 버튼을 눌러주세요.'); }
     player.stop(); $('text-editor').hidden = false; $('results').hidden = true; $('player-bar').hidden = true;
     document.body.classList.remove('has-results'); document.body.classList.add('has-content');
@@ -745,14 +755,13 @@
     utterance.onend=finished;utterance.onerror=event=>{if(!['canceled','interrupted'].includes(event.error))toast('미리듣기를 재생하지 못했어요. 다른 목소리를 선택해주세요.');finished();};synth.speak(utterance);
   });
   $('play-all').addEventListener('click', () => {
-    if (workspace?.playControl()) return;
     const state = player.getState();
-    if (state.scope === 'all' && state.status === 'playing') player.pause();
-    else if (state.scope === 'all' && state.status === 'paused') player.resume();
+    if (state.status === 'playing') player.pause();
+    else if (state.status === 'paused') player.resume();
     else player.play(paragraphs, 0, 'all', language());
   });
   $('stop').addEventListener('click', () => workspace.stop());
-  $('rate').addEventListener('input', () => { updateRateDisplay(); player.updateRate(); workspace.updateRate(); });
+  $('rate').addEventListener('input', () => { updateRateDisplay(); player.updateRate(); });
   $('dropzone').addEventListener('dragover', event => { event.preventDefault(); $('dropzone').classList.add('dragover'); });
   $('dropzone').addEventListener('dragleave', () => $('dropzone').classList.remove('dragover'));
   $('dropzone').addEventListener('drop', event => { event.preventDefault(); $('dropzone').classList.remove('dragover'); acceptPhoto(event.dataTransfer.files[0]); });
@@ -760,7 +769,7 @@
   window.addEventListener('pagehide', () => reset({scroll:false}));
   if (synth) synth.addEventListener('voiceschanged', updateVoiceWarning);
   workspace=StudyWorkspace.create({
-    get:()=>({paragraphs,annotations,photo,language:language()}),voiceFor,stop:()=>player.stop(),toast,rescan:rescanRegion,
+    get:()=>({paragraphs,annotations,photo,language:language()}),voiceFor,listenFrom,stop:()=>player.stop(),toast,rescan:rescanRegion,
     tokenize:requestFurigana,repaint:paintReadings,
     wordReading:(index,word)=>{if(!furiganaTokens?.[index])return word.reading;return rubySegments(paragraphs[index],furiganaTokens[index],readingOverrides[index]).filter(p=>p.start>=word.start&&p.end<=word.end).map(p=>p.reading||p.base).join('');},
     commit:(records,notes,keepUndo)=>{const restore=showFurigana,overrides=new Map(workspace.records().map((r,i)=>[r.id,readingOverrides[i]]));revision++;cancelOCR();showParagraphs(records.map(r=>r.text),notes,records,keepUndo);readingOverrides=records.map(r=>overrides.get(r.id));if(!photo)pasteDraft=paragraphs.join('\n\n');if(restore&&language()==='ja')toggleFurigana();}

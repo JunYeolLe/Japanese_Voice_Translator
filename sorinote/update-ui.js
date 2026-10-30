@@ -1,7 +1,7 @@
 'use strict';
 (()=>{
   if(!('serviceWorker'in navigator))return;
-  const BUILD='sorinote-shell-16',sw=navigator.serviceWorker;
+  const BUILD='sorinote-shell-17',sw=navigator.serviceWorker;
   const panel=document.createElement('aside');panel.id='update-notice';panel.hidden=true;panel.setAttribute('aria-label','소리노트 업데이트');
   panel.innerHTML='<strong>새 버전이 준비됐어요</strong><p id="update-message" role="status"></p><p class="update-note">적용하면 화면을 새로 열며 현재 사진·본문은 비워집니다.</p><div><button id="update-apply" class="primary" type="button">적용하기</button><button id="update-later" class="secondary" type="button">나중에</button></div>';
   document.body.append(panel);

@@ -36,7 +36,7 @@ test('앱을 모두 닫아 새 워커가 활성화돼도 적용 전에는 선택
  },match:async r=>{for(const store of stores.values())if(store.has(key(r)))return store.get(key(r)).clone();},keys:async()=>[...stores.keys()],delete:async n=>stores.delete(n)};
  await(await caches.open('sorinote-update-settings')).put(scope+'active-shell',new Response('sorinote-shell-15'));
  await(await caches.open('sorinote-shell-15')).put('./',new Response('old release'));
- await(await caches.open('sorinote-shell-16')).put('./',new Response('new release'));
+ await(await caches.open(fs.readFileSync(require.resolve('../sorinote/sw.js'),'utf8').match(/const CACHE='([^']+)'/)[1])).put('./',new Response('new release'));
  const context=vm.createContext({URL,Response,caches,location:{origin:scope.slice(0,-1)},fetch:()=>assert.fail('Cached shell should not use network'),self:{registration:{scope},addEventListener:(n,f)=>events[n]=f,clients:{claim:async()=>{},matchAll:async()=>[{},{}]},skipWaiting:async()=>skipped++}});
  vm.runInContext(fs.readFileSync(require.resolve('../sorinote/sw.js'),'utf8'),context);
  let task;events.activate({waitUntil:p=>task=p});await task;

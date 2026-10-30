@@ -136,6 +136,30 @@ function harness() {
   const player = createPlayback({synth,makeUtterance:text=>({text}),getRate:()=>rate,onChange:state=>events.push(state),onError:error=>errors.push(error),schedule:fn=>{scheduled.set(++nextId,fn);return nextId;},unschedule:id=>scheduled.delete(id)});
   return {player,synth,spoken,events,errors,setRate(value){rate=value;},finish(){spoken.at(-1).onend();},tick(){const entries=[...scheduled.entries()];scheduled.clear();entries.forEach(([,fn])=>fn());}};
 }
+
+test('단어 위치부터 듣기는 앞 글자를 재생하지 않고 원문 문장 좌표를 유지한다',()=>{
+ const h=harness(),text='今日は図書館に行きます。次を読みます。';
+ h.player.play([text,'最後です。'],0,'all','ja',{startOffset:3});
+ assert.equal(h.spoken[0].text,'図書館に行きます。');assert.equal(h.player.getState().rangeStart,0);
+ h.finish();h.tick();assert.equal(h.spoken[1].text,'次を読みます。');
+ h.finish();h.tick();assert.equal(h.spoken[2].text,'最後です。');
+});
+test('이전 다음은 긴 발화 조각이 아니라 문장과 단락 경계를 이동한다',()=>{
+ const {sentenceTarget}=require('../sorinote/core');
+ const docs=['一'.repeat(230)+'。次です。','最後です。'];
+ assert.deepEqual(sentenceTarget(docs,'ja',0,180,1),{paragraph:0,start:231,end:235});
+ assert.deepEqual(sentenceTarget(docs,'ja',0,231,1),{paragraph:1,start:0,end:5});
+ assert.deepEqual(sentenceTarget(docs,'ja',1,0,-1),{paragraph:0,start:231,end:235});
+ assert.equal(sentenceTarget(docs,'ja',0,0,-1),null);assert.equal(sentenceTarget(docs,'ja',1,0,1),null);
+});
+test('이동 후 취소된 음성의 이벤트가 새 위치를 덮지 않으며 일시정지 후 중복하지 않는다',()=>{
+ const h=harness(),docs=['First sentence. Second sentence.','Third sentence.'];
+ h.player.play(docs,0,'all','en');const old=h.spoken[0];
+ h.player.play(docs,0,'all','en',{startOffset:16});old.onend();old.onerror({error:'canceled'});h.tick();
+ assert.equal(h.spoken.at(-1).text,'Second sentence.');assert.equal(h.spoken.length,2);
+ h.player.pause();h.player.resume();assert.equal(h.spoken.length,2);
+ h.finish();h.tick();assert.equal(h.spoken.at(-1).text,'Third sentence.');
+});
 test('단락 듣기는 선택한 단락만 끝까지 읽고 다음 단락으로 넘어가지 않는다', () => {
   const h=harness(); h.player.play(['첫 번째입니다.','두 번째입니다. 다음 문장입니다.','세 번째입니다.'],1,'paragraph','ko');
   assert.equal(h.spoken[0].text,'두 번째입니다.'); h.finish(); h.tick();
