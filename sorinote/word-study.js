@@ -125,5 +125,5 @@ window.StudyWords={create(bridge){
       meanings.clear();bridge.repaint();render();
     },
     translated(id){translated.add(id);render();if(summary.open)prepareSummary();},
-    stop:cancelSpeech};
+    isListening:()=>Boolean(utterance),stop:cancelSpeech};
 }};

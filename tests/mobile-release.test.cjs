@@ -10,7 +10,7 @@ test('공개 사전은 품사별로 조회하며 기본형의 한국어 뜻을 �
  assert.equal(context.StudyVocabulary.local({surface:'冷蔵庫',base:'冷蔵庫',pos:'動詞'}),null);
 });
 test('설치 캐시에는 존재하는 앱 자산만 넣고 사진과 외부 요청은 캐시하지 않는다',async()=>{
- const events={},cached=[];const context=vm.createContext({URL,location:{origin:'https://example.test'},self:{addEventListener:(name,fn)=>events[name]=fn},caches:{open:async()=>({addAll:async files=>cached.push(...files)})}});
+ const events={},cached=[];const context=vm.createContext({URL,location:{origin:'https://example.test'},self:{registration:{scope:'https://example.test/'},addEventListener:(name,fn)=>events[name]=fn},caches:{open:async()=>({addAll:async files=>cached.push(...files)})}});
  vm.runInContext(fs.readFileSync(path.join(root,'sw.js'),'utf8'),context);
  let install;events.install({waitUntil:p=>install=p});await install;
  for(const file of cached)assert.ok(fs.existsSync(path.join(root,file==='./'?'index.html':file.split('?')[0])),file);

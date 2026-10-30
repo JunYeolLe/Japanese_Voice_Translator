@@ -192,5 +192,6 @@ window.StudyWorkspace={create(bridge){
   $('practice-hide').onclick=()=>{const hidden=practice.classList.toggle('hide-original');$('practice-hide').setAttribute('aria-pressed',String(hidden));$('practice-hide').textContent=hidden?'원문 보이기':'원문 가리기';};
   return {setDocument,reset,highlight,navigate,renderPractice,stop,view:()=>view,records:()=>records,words:wordStudy.words,openWord:wordStudy.open,wordData:wordStudy.inspect,changeWords:wordStudy.changeWords,
     playControl(){if(view!=='practice')return false;const state=practicePlayer.getState();if(state.status==='playing')practicePlayer.pause();else if(state.status==='paused')practicePlayer.resume();else playSentence(Math.max(0,practiceSentence));return true;},
+    isListening:()=>['playing','paused'].includes(practicePlayer.getState().status)||wordStudy.isListening(),
     updateRate(){practicePlayer.updateRate();},stopPractice(){practicePlayer.stop();}};
 }};

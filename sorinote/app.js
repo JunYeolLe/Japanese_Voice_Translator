@@ -765,6 +765,6 @@
     wordReading:(index,word)=>{if(!furiganaTokens?.[index])return word.reading;return rubySegments(paragraphs[index],furiganaTokens[index],readingOverrides[index]).filter(p=>p.start>=word.start&&p.end<=word.end).map(p=>p.reading||p.base).join('');},
     commit:(records,notes,keepUndo)=>{const restore=showFurigana,overrides=new Map(workspace.records().map((r,i)=>[r.id,readingOverrides[i]]));revision++;cancelOCR();showParagraphs(records.map(r=>r.text),notes,records,keepUndo);readingOverrides=records.map(r=>overrides.get(r.id));if(!photo)pasteDraft=paragraphs.join('\n\n');if(restore&&language()==='ja')toggleFurigana();}
   });
-  window.Sorinote={workspace,get:()=>({photo,paragraphs}),repaint:paintReadings};
+  window.Sorinote={workspace,get:()=>({photo,paragraphs}),repaint:paintReadings,isListening:()=>['playing','paused'].includes(player.getState().status)||workspace.isListening()||Boolean(voicePreview&&(synth?.speaking||synth?.pending))};
   renderIntake();updateRateDisplay(); updateVoiceWarning(); renderPlayback(player.getState());
 })();

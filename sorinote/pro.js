@@ -47,5 +47,4 @@ const license=el('a','기본 사전 출처 · CC BY-SA 4.0');license.href='dicti
 const emptyStudy=el('p','본문으로 돌아가 단락의 한국어 뜻 보기를 먼저 눌러주세요.','workspace-hint');page.append(emptyStudy);
 function studyEmpty(){emptyStudy.hidden=!summary.hidden;}new MutationObserver(studyEmpty).observe(summary,{attributes:true,attributeFilter:['hidden']});studyEmpty();
 const info=el('details',null,'study-info');info.append(el('summary','정리 기준 · 사전 출처'));for(const hint of [...summary.querySelectorAll(':scope > .workspace-hint')])info.append(hint);summary.append(info);
-if('serviceWorker'in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});
 })();
