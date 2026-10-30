@@ -1,0 +1,6 @@
+const CACHE='sorinote-shell-14';
+const FILES=['./','index.html','style.css?v=12','pro.css?v=14','core.js?v=8','reading.js?v=6','ocr-clean.js?v=5','ocr-input.js?v=10','photo-quality.js?v=10','study.js?v=10','translation.js?v=12','vocabulary.js?v=14','word-study.js?v=14','workspace.js?v=14','app.js?v=14','basic-dictionary.js?v=14','pro.js?v=14','dictionary-data.js?v=14','dictionary-license.html','icon.svg','icon-192.png','icon-512.png','manifest.webmanifest'];
+self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(FILES))));
+self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('sorinote-shell-')&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
+// Only application assets are cached. No photos, text, translations or requests to other origins.
+self.addEventListener('fetch',e=>{const u=new URL(e.request.url);if(e.request.method!=='GET'||u.origin!==location.origin)return;const file=u.pathname.split('/').pop();if(!FILES.some(f=>f.split('?')[0]===file)&&file!=='')return;e.respondWith(fetch(e.request).catch(()=>caches.match(e.request).then(r=>r|| (e.request.mode==='navigate'?caches.match('./'):Response.error()))));});

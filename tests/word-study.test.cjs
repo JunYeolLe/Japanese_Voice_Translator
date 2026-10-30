@@ -15,6 +15,17 @@ test('전체 복사 중 뜻 조회가 실패하면 일부만 전체인 것처럼
  await h.el('study-copy').onclick();assert.equal(h.calls.copied,'');assert.match(h.el('study-status').textContent,/한도/);
 });
 // Minimal DOM harness for async lifecycle checks; layout is tested in the browser.
+test('단어 합치기와 나누기는 선택 위치에만 적용하고 원문은 보존한다',async()=>{
+ const token=s=>({surface_form:s,reading:s,pos:'名詞',basic_form:s});
+ const h=harness({tokenize:async()=>[[token('経済'),token('発展'),token('経済'),token('発展')]]});
+ const record={id:1,text:'経済発展経済発展'};h.app.setDocument([record],[]);await flush();
+ h.app.changeWords(0,0,4,[token('経済発展')]);
+ assert.deepEqual(h.app.words(0).map(w=>w.surface),['経済発展','経済','発展']);
+ h.app.changeWords(0,0,4,[token('経済'),token('発展')]);
+ assert.equal(h.app.words(0).length,4);assert.equal(record.text,'経済発展経済発展');
+ assert.throws(()=>h.app.changeWords(0,0,2,[token('改変')]),/원문/);
+});
+
 function harness(options={}){
  const elements=new Map();
  class Element{

@@ -28,7 +28,8 @@ window.StudyWords={create(bridge){
   const key=word=>word.surface+'|'+word.reading;
   async function meaning(word,signal){
     if(signal.aborted)throw new DOMException('취소됨','AbortError');
-    const known=V.lookup(word.surface);if(known)return {text:known,provider:'기본 풀이'};
+    const known=V.local(word);if(known)return known;
+    const registered=V.lookup(word.surface);if(registered)return {text:registered,provider:'기본 풀이'};
     if(meanings.has(key(word)))return meanings.get(key(word));
     const result=await bridge.translate(word.surface,signal);
     if(signal.aborted)throw new DOMException('취소됨','AbortError');
@@ -39,7 +40,8 @@ window.StudyWords={create(bridge){
     if(!current)return;
     $('word-meaning').textContent='뜻을 확인하고 있어요…';$('word-provider').textContent='';$('word-retry').hidden=true;
     try{const result=await meaning(current.word,controller.signal);if(version!==token||selected!==current||controller.signal.aborted)return;
-      $('word-meaning').textContent=result.text;$('word-provider').textContent=result.provider==='기본 풀이'?'대표 뜻 · 문장에 따라 다른 뜻일 수 있어요.':'자동 번역 · '+result.provider+' · 사전의 모든 뜻을 제공하지 않으며 문맥에 따라 틀릴 수 있어요.';
+      $('word-meaning').textContent=result.text;$('word-provider').textContent=['기본 풀이','위키낱말사전'].includes(result.provider)?result.provider+' · 대표 뜻 · 문장에 따라 다른 뜻일 수 있어요.':'자동 번역 · '+result.provider+' · 사전의 모든 뜻을 제공하지 않으며 문맥에 따라 틀릴 수 있어요.';
+      if(result.provider==='위키낱말사전'){const link=node('a','사전 원문 · 기여 이력');link.href='https://ko.wiktionary.org/wiki/'+encodeURIComponent(result.headword);link.target='_blank';link.rel='noopener noreferrer';$('word-provider').append(document.createTextNode(' '),link);}
     }catch(error){if(version===token&&selected===current&&!controller.signal.aborted){$('word-meaning').textContent=error.message||'뜻을 가져오지 못했어요.';$('word-retry').hidden=false;}}
     finally{if(wordJob===controller)wordJob=null;}
   }
@@ -61,7 +63,7 @@ window.StudyWords={create(bridge){
       if(!group.length)continue;list.append(node('h3',title));
       const ul=node('ul');for(const item of group){const cached=meanings.get(key(item));if(cached){item.meaning=cached.text;item.automatic=cached.provider!=='기본 풀이';}
         const row=node('li');row.append(node('span',item.surface+' : '+(item.reading||'읽는 법 확인 필요'),'study-term'),document.createTextNode(' ( '+(item.meaning||'뜻 준비 전')+' )'));
-        if(item.automatic)row.append(node('small','자동 번역','study-auto'));ul.append(row);
+        if(item.count>1)row.append(node('small',item.count+'회','study-auto'));if(item.automatic)row.append(node('small','자동 번역','study-auto'));ul.append(row);
       }list.append(ul);
     }
     if(!docs.length)$('study-status').textContent=loading?'단어 사전을 준비하고 있어요…':'단어 사전을 준비한 뒤 정리를 볼 수 있어요.';
@@ -95,7 +97,8 @@ window.StudyWords={create(bridge){
     if(token!==version)return;
     if(items.words.some(w=>!w.meaning)){bridge.toast('아직 뜻을 준비하지 못한 단어가 있어요. 남은 뜻 준비하기를 누른 뒤 전체 복사를 다시 시도해주세요.');return;}
     const vocabulary=V.format(items.words),grammar=V.format(items.grammar);
-    const text=[vocabulary&&'한자 단어\n'+vocabulary,grammar&&'중요 문법\n'+grammar].filter(Boolean).join('\n\n');if(!text)return;
+    const attribution=items.words.some(w=>w.dictionary)?'사전 풀이: 한국어 위키낱말사전 기여자들 / Kaikki.org, CC BY-SA 4.0 (선별·가공)\nhttps://ko.wiktionary.org/ · https://creativecommons.org/licenses/by-sa/4.0/':'';
+    const text=[vocabulary&&'한자 단어\n'+vocabulary,grammar&&'중요 문법\n'+grammar,attribution].filter(Boolean).join('\n\n');if(!text)return;
     try{await navigator.clipboard.writeText(text);bridge.toast(items.words.some(w=>!w.meaning)?'뜻이 준비된 항목만 복사했어요.':'단어와 문법 정리를 복사했어요.');}
     catch{const area=$('study-copy-fallback');area.hidden=false;area.value=text;area.focus();area.select();bridge.toast('아래 글을 선택해 직접 복사해주세요.');}
   };
@@ -112,6 +115,15 @@ window.StudyWords={create(bridge){
     if(!hint.hidden){const token=version;loading=analyze(token).finally(()=>{if(token===version)loading=null;});}
   }
   return {setDocument,reset(){setDocument([],[]);},words:index=>V.words(records[index]?.text||'',tokens[index]),open,close,
+    inspect:()=>({selected}),
+    changeWords(index,start,end,parts){
+      const record=records[index];if(!record)return;
+      const words=V.words(record.text,tokens[index]);
+      if(!words.some(w=>w.start===start)||!words.some(w=>w.end===end)||end<=start||!parts.length||parts.some(p=>!p.surface_form)||parts.map(p=>p.surface_form).join('')!==record.text.slice(start,end))throw new Error('원문을 바꾸지 않는 단어 구분만 적용할 수 있어요.');
+      wordJob?.abort();summaryJob?.abort();summaryJob=null;version++;
+      tokens[index]=words.flatMap(w=>w.start===start?parts:w.start>start&&w.start<end?[]:[{surface_form:w.surface,reading:w.reading||'',basic_form:w.base||w.surface,pos:w.pos||'',pos_detail_1:w.detail||''}]);
+      meanings.clear();bridge.repaint();render();
+    },
     translated(id){translated.add(id);render();if(summary.open)prepareSummary();},
     stop:cancelSpeech};
 }};

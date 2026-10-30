@@ -1,6 +1,10 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const V=require('../sorinote/vocabulary'),T=require('../sorinote/translation');
 const t=(surface,reading,pos='名詞',detail='一般',base=surface)=>({surface_form:surface,reading,pos,pos_detail_1:detail,basic_form:base});
+test('활용형이 달라도 기본형이 같으면 한 항목으로 세고 원래 표기를 유지한다',()=>{
+ const result=V.collect([{text:'読みました。読む。',tokens:[t('読み','ヨミ','動詞','自立','読む'),t('まし','マシ','助動詞'),t('た','タ','助動詞'),t('。','。','記号'),t('読む','ヨム','動詞','自立','読む'),t('。','。','記号')]}]);
+ assert.equal(result.words.length,1);assert.equal(result.words[0].count,2);assert.equal(result.words[0].base,'読む');assert.equal(result.words[0].surface,'読みました');
+});
 test('띄어쓰기 없는 본문에서 図書館 전체와 반복 등장 위치를 보존한다',()=>{
   const text=' 図書館で図書館の本。',tokens=[t('図書館','トショカン'),t('で','デ','助詞'),t('図書館','トショカン'),t('の','ノ','助詞'),t('本','ホン'),t('。','。','記号')];
   const words=V.words(text,tokens);assert.equal(words.map(w=>w.surface).join(''),text);

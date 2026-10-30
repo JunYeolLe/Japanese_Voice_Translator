@@ -48,13 +48,21 @@
     }
     return matches.sort((a,b)=>a.start-b.start).filter((item,i,all)=>all.findIndex(x=>x.surface===item.surface)===i);
   }
+  function local(word){
+    const meaning=glosses[word.surface]||root.BasicDictionary?.[word.base]?.meaning;
+    if(meaning)return {text:meaning,provider:'기본 풀이'};
+    const headword=word.base||word.surface,rows=root.OpenDictionary?.[headword];
+    const pos={名詞:'noun',動詞:'verb',形容詞:'adj',副詞:'adv'}[word.pos];
+    const row=rows?.find(r=>r[0]===pos);
+    return row?{text:row[1],provider:'위키낱말사전',headword}:null;
+  }
   function collect(documents,limit=24){
     const map=new Map(),patterns=new Map();let order=0;
     for(const doc of documents){
       for(const word of words(doc.text,doc.tokens)){
         if(!/[一-龯々]/.test(word.surface)||!['名詞','動詞','形容詞','副詞'].includes(word.pos)||['固有名詞','数','非自立','代名詞'].includes(word.detail))continue;
-        const key=word.surface+'|'+word.reading,previous=map.get(key);
-        if(previous)previous.count++;else map.set(key,{...word,kind:'word',meaning:glosses[word.surface]||'',count:1,order:order++});
+        const key=word.base||word.surface,previous=map.get(key);
+        if(previous)previous.count++;else {const known=local(word);map.set(key,{...word,kind:'word',meaning:known?.text||'',dictionary:known?.provider==='위키낱말사전',count:1,order:order++});}
       }
       for(const item of grammarIn(doc.text,doc.tokens))if(!patterns.has(item.surface))patterns.set(item.surface,item);
     }
@@ -63,5 +71,5 @@
   }
   function format(items){return items.filter(x=>x.meaning).map(x=>`${x.surface} : ${x.reading||'읽는 법 확인 필요'} ( ${x.meaning} )`).join('\n');}
   const lookup=surface=>glosses[surface]||grammar.find(g=>g[0]===surface)?.[2]||'';
-  const api={hira,glosses,lookup,words,grammarIn,collect,format};if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.StudyVocabulary=api;
+  const api={hira,glosses,lookup,local,words,grammarIn,collect,format};if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.StudyVocabulary=api;
 })(typeof globalThis!=='undefined'?globalThis:this);
