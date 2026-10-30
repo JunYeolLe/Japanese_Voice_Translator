@@ -15,6 +15,11 @@ const fold=el('details',null,'intake-fold');fold.append(el('summary','본문 가
 let hadResults;
 function intake(){const hasResults=document.body.classList.contains('has-results');if(hasResults!==hadResults){fold.open=!hasResults;hadResults=hasResults;}preview.hidden=$('results').hidden;}
 new MutationObserver(intake).observe(document.body,{attributes:true,attributeFilter:['class']});intake();$('write-text').addEventListener('click',()=>fold.open=true);$('edit-text').addEventListener('click',()=>fold.open=true);$('another-photo').addEventListener('click',()=>fold.open=true);$('paste-again').addEventListener('click',()=>fold.open=true);
+// Keep the empty landing page compact; content, editors and accessibility zoom can scroll normally.
+const photoOptions=el('details',null,'photo-options');photoOptions.append(el('summary','사진 인식 설정'));$('layout-field').before(photoOptions);photoOptions.append($('layout-field'));
+const syncPhotoOptions=()=>{photoOptions.hidden=$('layout-field').hidden;};new MutationObserver(syncPhotoOptions).observe($('layout-field'),{attributes:true,attributeFilter:['hidden']});syncPhotoOptions();
+function landing(){const active=!document.body.classList.contains('has-content')&&!document.body.classList.contains('has-results')&&$('text-editor').hidden&&!$('read-view').hidden; if(document.body.classList.contains('landing')!==active)document.body.classList.toggle('landing',active);}
+new MutationObserver(landing).observe(document.body,{attributes:true,attributeFilter:['class']});for(const id of ['text-editor','read-view'])new MutationObserver(landing).observe($(id),{attributes:true,attributeFilter:['hidden']});landing();
 const settings=$('reading-settings'),settingsAnchor=el('span');settings.before(settingsAnchor);
 function playerSettings(open){const bar=$('player-bar');bar.classList.toggle('expanded',open);if(open)bar.append(settings);else settingsAnchor.after(settings);settings.open=open;expand.setAttribute('aria-expanded',String(open));}
 const expand=btn('속도 · 목소리',event=>{event.stopPropagation();playerSettings(!$('player-bar').classList.contains('expanded'));});expand.className='player-expand';expand.setAttribute('aria-expanded','false');document.querySelector('.player-controls').append(expand);
